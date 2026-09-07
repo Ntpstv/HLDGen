@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    font-size: 11px;
+    background: #1C1E2A;
+    color: #C8CEDF;
+    padding: 12px;
+    min-height: 100vh;
+  }
+  h1 { font-size: 12px; font-weight: 600; color: #E8EBF5; letter-spacing: .04em; margin-bottom: 3px; }
+  .sub { color: #606880; font-size: 10px; margin-bottom: 10px; line-height: 1.5; }
+
+  textarea {
+    width: 100%;
+    height: 180px;
+    background: #12141F;
+    border: 1px solid #2A2F4A;
+    border-radius: 6px;
+    color: #C8CEDF;
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: 9.5px;
+    padding: 8px;
+    resize: vertical;
+    outline: none;
+    margin-bottom: 8px;
+  }
+  textarea:focus { border-color: #4D8EFF; }
+  textarea::placeholder { color: #404660; }
+
+  .preview {
+    background: #12141F;
+    border: 1px solid #2A2F4A;
+    border-radius: 5px;
+    padding: 7px 9px;
+    margin-bottom: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px;
+    color: #606880;
+    min-height: 28px;
+    display: none;
+  }
+  .preview.visible { display: block; }
+  .preview .ok { color: #2DD4A0; }
+  .preview .scene-chip {
+    display: inline-block;
+    background: rgba(77,142,255,.15);
+    border: 1px solid rgba(77,142,255,.3);
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: #4D8EFF;
+    margin: 2px 2px 0 0;
+    font-size: 9px;
+  }
+
+  .row { display: flex; gap: 6px; }
+  button {
+    border: none; border-radius: 4px; cursor: pointer;
+    font-size: 11px; font-weight: 600; padding: 7px 12px; transition: opacity .15s;
+  }
+  button:hover { opacity: .85; }
+  button:active { opacity: .7; }
+  .btn-gen { background: #4D8EFF; color: #fff; flex: 1; }
+  .btn-clear { background: #1E2238; border: 1px solid #2A2F4A; color: #E8576A; padding: 7px 10px; }
+
+  .status { font-size: 10px; color: #606880; margin-top: 7px; min-height: 14px; font-family: 'JetBrains Mono', monospace; }
+  .status.ok  { color: #2DD4A0; }
+  .status.err { color: #E8576A; }
+
+  .tip { font-size: 9.5px; color: #404660; margin-top: 10px; line-height: 1.6; border-top: 1px solid #2A2F4A; padding-top: 8px; }
+  code { color: #4D8EFF; font-family: monospace; }
+</style>
+</head>
+<body>
+
+<h1>HLDGen — Scene Importer</h1>
+<div class="sub">
+  Paste the HLDBundle JSON (output of <code>hldgen … -o bundle.json</code>).<br>
+  One file contains all scenes — no need to split per scene.
+</div>
+
+<textarea id="jsonInput" placeholder='{ "module": "PTPassModule", "scenes": [ ... ] }'></textarea>
+
+<div class="preview" id="preview"></div>
+
+<div class="row">
+  <button class="btn-gen" onclick="generate()">Generate in Figma</button>
+  <button class="btn-clear" onclick="clearAll()">Clear</button>
+</div>
+
+<div class="status" id="status"></div>
+
+<div class="tip">
+  Generate all scenes at once:<br>
+  <code>swift run --package-path Tools/HLDGen hldgen \</code><br>
+  <code>&nbsp;&nbsp;Scenes/Home Scenes/ProductHighlight … \</code><br>
+  <code>&nbsp;&nbsp;--module PTPassModule -o bundle.json</code>
+</div>
+
+<script>
+  const ta = document.getElementById('jsonInput');
+  const previewEl = document.getElementById('preview');
+
+  ta.addEventListener('input', updatePreview);
+
+  function updatePreview() {
+    const raw = ta.value.trim();
+    if (!raw) { previewEl.className = 'preview'; return; }
+    try {
+      const parsed = JSON.parse(raw);
+      const scenes = parsed.scenes || (Array.isArray(parsed) ? parsed : [parsed]);
+      const mod = parsed.module || '—';
+      previewEl.innerHTML = `<span class="ok">✓ valid</span> &nbsp;module: <b style="color:#E8EBF5">${mod}</b> &nbsp;` +
+        scenes.map(s => `<span class="scene-chip">${s.name || s.id || '?'}</span>`).join('');
+      previewEl.className = 'preview visible';
+    } catch(e) {
+      previewEl.innerHTML = `<span style="color:#E8576A">✗ invalid JSON</span>`;
+      previewEl.className = 'preview visible';
+    }
+  }
+
+  function clearAll() {
+    ta.value = '';
+    previewEl.className = 'preview';
+    setStatus('', '');
+  }
+
+  function setStatus(msg, cls) {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = 'status ' + (cls || '');
+  }
+
+  function generate() {
+    const raw = ta.value.trim();
+    if (!raw) { setStatus('Paste an HLDBundle JSON first.', 'err'); return; }
+
+    let scenes;
+    try {
+      const parsed = JSON.parse(raw);
+      // Accept: HLDBundle { module, scenes[] }  |  SceneResult[]  |  single SceneResult
+      if (parsed.scenes && Array.isArray(parsed.scenes)) {
+        scenes = parsed.scenes;
+      } else if (Array.isArray(parsed)) {
+        scenes = parsed;
+      } else {
+        scenes = [parsed];
+      }
+    } catch(e) {
+      setStatus(`Invalid JSON: ${e.message}`, 'err');
+      return;
+    }
+
+    if (!scenes.length) { setStatus('No scenes found in JSON.', 'err'); return; }
+    setStatus(`Sending ${scenes.length} scene(s) to Figma…`, '');
+    parent.postMessage({ pluginMessage: { type: 'generate', scenes } }, '*');
+  }
+
+  window.onmessage = (e) => {
+    const msg = e.data.pluginMessage;
+    if (!msg) return;
+    if (msg.type === 'done')  setStatus(`✓ Done — ${msg.detail}`, 'ok');
+    if (msg.type === 'error') setStatus(`✗ ${msg.detail}`, 'err');
+  };
+</script>
+</body>
+</html>
