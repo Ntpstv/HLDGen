@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: ./Tools/hldgen.sh <ModuleDir> [-o output.json]
-# Example: ./Tools/hldgen.sh PTPassModule
-# Example: ./Tools/hldgen.sh PTPassModule -o /tmp/ptpass.json
+# Example: ./Tools/hldgen.sh Calendar
+# Example: ./Tools/hldgen.sh Calendar -o Tools/bundle.json
 #
 # Auto-discovers: scene dirs, API router, API service dir, flow file.
 # Run from repo root.

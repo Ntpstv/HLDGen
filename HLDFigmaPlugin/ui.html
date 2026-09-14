@@ -83,7 +83,7 @@
   One file contains all scenes — no need to split per scene.
 </div>
 
-<textarea id="jsonInput" placeholder='{ "module": "PTPassModule", "scenes": [ ... ] }'></textarea>
+<textarea id="jsonInput" placeholder='{ "module": "MyModule", "scenes": [ ... ] }'></textarea>
 
 <div class="preview" id="preview"></div>
 
@@ -98,7 +98,7 @@
   Generate all scenes at once:<br>
   <code>swift run --package-path Tools/HLDGen hldgen \</code><br>
   <code>&nbsp;&nbsp;Scenes/Home Scenes/ProductHighlight … \</code><br>
-  <code>&nbsp;&nbsp;--module PTPassModule -o bundle.json</code>
+  <code>&nbsp;&nbsp;--module &lt;ModuleName&gt; -o bundle.json</code>
 </div>
 
 <script>

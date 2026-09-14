@@ -158,7 +158,7 @@ figma.ui.onmessage = async (msg) => {
 // ── Build a complete screen card (no stickies — handled in main loop) ─────────
 async function buildScreenCard(scene, x, y) {
   const vcName    = (scene.viewControllers || [])[0] || 'Screen';
-  const shortName = vcName.replace('ViewController', '').replace('PTPass', '');
+  const shortName = vcName.replace('ViewController', '');
 
   const card = figma.createFrame();
   card.name = vcName;
@@ -389,7 +389,6 @@ async function buildSticky(chain, isExternal, cardW) {
     sub.characters = '→ ' + truncate(
       (dest || svc)
         .replace('ViewController', 'VC')
-        .replace('PTPass', '')
         .replace(' screen', '')
         .replace('flow completes (returns to caller / exits module)', 'exits module'),
       32
@@ -555,7 +554,7 @@ function buildArrow(fromNode, toNode, color) {
 }
 
 // ── Destination → frame resolution ───────────────────────────────────────────
-// dest examples: "PTPassHistoryRevokeViewController screen", "ScanQR", "next queued screen"
+// dest examples: "HistoryRevokeViewController screen", "ScanQR", "next queued screen"
 function findFrameForDest(dest, vcToFrame) {
   if (!dest || dest.includes('next queued') || dest.includes('exits') || dest.includes('completes')) return null;
   const destLow = dest.toLowerCase().replace(/\s+screen$/, '');
@@ -563,7 +562,7 @@ function findFrameForDest(dest, vcToFrame) {
     // exact VC class name in dest string
     if (dest.includes(vcName)) return frame;
     // short name: strip ViewController + module prefix
-    const short = vcName.replace('ViewController', '').replace(/PTPass|Paotang|Ekyc/g, '').toLowerCase();
+    const short = vcName.replace('ViewController', '').toLowerCase();
     if (short.length > 2 && destLow.includes(short)) return frame;
     // reverse substring (e.g. destToken="scanqr" ⊂ short="qrscanner" fails,
     // but word-parts of dest each checked: "scan" ⊂ "qrscanner" ✓)

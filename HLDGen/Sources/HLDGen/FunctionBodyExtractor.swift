@@ -71,7 +71,7 @@ func extractServiceCalls(_ body: String) -> [(serviceOrVar: String, method: Stri
     for m in body.matches(#"(\w+[Ss]ervice|[Ss]ervice\w+)\.(\w+)\s*\("#) {
         results.append((m[1], m[2]))
     }
-    // Inline instantiate-then-call, e.g. `PTPassValidatePublicQRService().execute(request:...)` — this
+    // Inline instantiate-then-call, e.g. `ValidatePublicQRService().execute(request:...)` — this
     // codebase's dominant idiom (a fresh instance per call site, no stored/local variable at all).
     for m in body.matches(#"(\w+Service)\s*\(\s*\)\s*\.(\w+)\s*\("#) {
         results.append((m[1], m[2]))

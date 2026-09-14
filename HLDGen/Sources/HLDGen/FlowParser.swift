@@ -15,7 +15,7 @@ struct FlowScreenBinding {
     var cases: [FlowCaseDestination]
 }
 
-/// This codebase's Flow coordinators (Flow/PTPass*Flow.swift) are extremely regular: each screen gets a
+/// Flow coordinators (Flow/*Flow.swift) are extremely regular: each screen gets a
 /// `func create<Name>() -> FlowPage<SomeViewController> { ... bindStyle: { vc in vc.onRouteNext.bind { switch
 /// model.caseOutput { case .X: ...; self.showNext(type: NextVC.self) } } } }`. The VC itself never knows its own
 /// destination — it only emits an Output enum case — so resolving "which screen does tapping this button reach"

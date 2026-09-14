@@ -8,13 +8,11 @@ import Foundation
 /// HLDBundle ({ "module": "...", "scenes": [...] }) rather than a bare SceneResult — but
 /// a single scene is also wrapped in HLDBundle, so the output shape is always the same.
 ///
-/// Example (all 5 PTPass scenes in one shot):
+/// Example (CalendarApp):
 ///   swift run --package-path Tools/HLDGen hldgen \
-///     Scenes/Home Scenes/ProductHighlight Scenes/HistoryRevoke Scenes/QRScanner Scenes/RevokeConsent \
-///     --module PTPassModule \
-///     --api-dir PTPassModule/API/Service \
-///     --api-router PTPassModule/API/PTPassRouter.swift \
-///     -o /tmp/ptpass.json
+///     Calendar \
+///     --module CalendarApp \
+///     -o Tools/bundle.json
 
 func printUsageAndExit() -> Never {
     FileHandle.standardError.write("""
@@ -30,11 +28,9 @@ func printUsageAndExit() -> Never {
 
     Example:
       swift run --package-path Tools/HLDGen hldgen \\
-        Scenes/Home Scenes/ProductHighlight \\
-        --module PTPassModule \\
-        --api-dir PTPassModule/API/Service \\
-        --api-router PTPassModule/API/PTPassRouter.swift \\
-        -o /tmp/ptpass.json
+        Calendar \\
+        --module CalendarApp \\
+        -o Tools/bundle.json
 
     """.data(using: .utf8)!)
     exit(1)

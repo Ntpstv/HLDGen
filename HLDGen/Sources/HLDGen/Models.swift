@@ -57,7 +57,7 @@ struct ActionChain: Codable {
     var resolvedDestinations: [String]
 }
 
-/// One backend endpoint, resolved from an API-router enum-of-functions file (e.g. PTPassRouter.swift).
+/// One backend endpoint, resolved from an API-router enum-of-functions file (e.g. MyRouter.swift).
 struct ApiEndpoint: Codable {
     var caseName: String
     var path: String
