@@ -61,7 +61,6 @@ figma.ui.onmessage = async (msg) => {
 
     // ── Pass 2: create sticky notes, track them for connectors ───────────────
     const stickyRecords = [];   // { sticky, chain, sourceFrame }
-    const ghostCards    = new Map();  // destKey → ghost frame
 
     for (const { scene, frame } of cards) {
       const actions = (scene.actionChains || []).filter(a => {
@@ -105,8 +104,6 @@ figma.ui.onmessage = async (msg) => {
     }
 
     // ── Pass 3: draw arrows sticky → destination (vector lines, not connectors) ─
-    const rightmostX = Math.max(...cards.map(c => c.frame.x)) + CARD_W + CARD_GAP;
-    let ghostRow = 0;
     let arrowCount = 0;
 
     // Destinations we never draw arrows for — not meaningful on an HLD diagram
@@ -132,24 +129,15 @@ figma.ui.onmessage = async (msg) => {
           const arrow = buildArrow(sticky, targetFrame, C.accent);
           if (arrow) { figma.currentPage.appendChild(arrow); arrowCount++; }
         } else if (!targetFrame) {
-          // Only create a ghost card for genuinely external VCs (not flow internals)
-          const ghostKey = dest.trim();
-          if (!ghostCards.has(ghostKey)) {
-            const ghost = await buildGhostCard(dest);
-            ghost.x = rightmostX;
-            ghost.y = ghostRow * (GHOST_H + 28);
-            figma.currentPage.appendChild(ghost);
-            ghostCards.set(ghostKey, ghost);
-            ghostRow++;
-          }
-          const arrow = buildArrow(sticky, ghostCards.get(ghostKey), C.pink);
-          if (arrow) { figma.currentPage.appendChild(arrow); arrowCount++; }
+          // External destination — append "(external)" label to sticky text instead of drawing a card + arrow
+          const shortDest = dest.replace('ViewController', 'VC').replace(' screen', '').trim();
+          appendExternalLabel(sticky, shortDest);
         }
       }
     }
 
     figma.viewport.scrollAndZoomIntoView(cards.map(c => c.frame));
-    figma.ui.postMessage({ type: 'done', detail: `${scenes.length} screens · ${arrowCount} arrows · ${ghostCards.size} external` });
+    figma.ui.postMessage({ type: 'done', detail: `${scenes.length} screens · ${arrowCount} arrows` });
   } catch (e) {
     figma.ui.postMessage({ type: 'error', detail: String(e) });
   }
@@ -410,6 +398,21 @@ async function buildSticky(chain, isExternal, cardW) {
   }
 
   return f;
+}
+
+// ── Append external destination label to an existing sticky ──────────────────
+function appendExternalLabel(sticky, destName) {
+  // Find the smallest-font TEXT node (the subtitle) and append external dest
+  let subNode = null;
+  for (const child of sticky.children) {
+    if (child.type === 'TEXT' && child.fontSize <= 10) {
+      if (!subNode || child.fontSize < subNode.fontSize) subNode = child;
+    }
+  }
+  if (subNode) {
+    const current = subNode.characters;
+    subNode.characters = current + (current ? '\n' : '') + '↗ ' + destName + ' (ext)';
+  }
 }
 
 // ── Build ghost card for external module reference ────────────────────────────
