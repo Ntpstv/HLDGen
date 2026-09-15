@@ -9,13 +9,25 @@
 set -euo pipefail
 
 MODULE_DIR="${1:?Usage: $0 <ModuleDir> [-o output.json]}"
-OUTPUT="${3:-/tmp/hld_bundle.json}"
+shift
+OUTPUT="/tmp/hld_bundle.json"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) OUTPUT="${2:?-o needs a path}"; shift 2 ;;
+    *)  echo "Unknown argument: $1" >&2; exit 1 ;;
+  esac
+done
 
 # Module name = last path component without trailing slash
 MODULE_NAME="$(basename "$MODULE_DIR")"
 
+# Package path is resolved from this script's own location, so the checkout can be named
+# anything (Tools/, PaotangPay/HLDGen/, …) without the caller passing a path.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG="$SCRIPT_DIR/HLDGen"
+
 # ── Build tool (fast no-op if already built) ─────────────────────────────────
-swift build -c release --package-path Tools/HLDGen 2>&1 | tail -2
+swift build --package-path "$PKG" 2>&1 | tail -2
 
 # ── Auto-discover scene dirs ──────────────────────────────────────────────────
 # Prefer <Module>/<Module>/Scenes/ (CleanSwift), fall back to whole module dir (MVC/MVVM/SwiftUI)
@@ -26,13 +38,21 @@ if [ ! -d "$SCENE_ROOT" ]; then
   echo "No Scenes/ folder found — scanning $SCENE_ROOT directly"
 fi
 
+# One scene = one directory holding a *ViewController.swift. Nested folders each count separately:
+# a container like Scenes/Home holds its own VC *and* a subfolder per sibling screen, and collapsing
+# those into one entry is what turns ten screens into a single unreadable card.
+# Read line-by-line (never `$( )` word-splitting) so directory names containing spaces survive.
 SCENE_DIRS=()
-while IFS= read -r vc; do
-  SCENE_DIRS+=("$(dirname "$vc")")
-done < <(find "$SCENE_ROOT" -maxdepth 4 -name "*ViewController.swift" -o -name "*ViewModel.swift" -o -name "*View.swift" | sort | uniq)
+while IFS= read -r d; do
+  SCENE_DIRS+=("$d")
+done < <(find "$SCENE_ROOT" -name "*ViewController.swift" -exec dirname {} \; | sort -u)
 
-# Deduplicate dirs
-SCENE_DIRS=($(printf '%s\n' "${SCENE_DIRS[@]}" | sort -u))
+# SwiftUI / MVVM modules have no ViewControllers — fall back to View / ViewModel files
+if [ ${#SCENE_DIRS[@]} -eq 0 ]; then
+  while IFS= read -r d; do
+    SCENE_DIRS+=("$d")
+  done < <(find "$SCENE_ROOT" \( -name "*ViewModel.swift" -o -name "*View.swift" \) -exec dirname {} \; | sort -u)
+fi
 
 if [ ${#SCENE_DIRS[@]} -eq 0 ]; then
   # Last resort: pass the module dir itself
@@ -46,7 +66,7 @@ for s in "${SCENE_DIRS[@]}"; do echo "  $s"; done
 # ── Auto-discover API router ──────────────────────────────────────────────────
 API_FLAGS=()
 API_BASE="$MODULE_DIR/$MODULE_NAME/API"
-ROUTER="$(find "$API_BASE" -maxdepth 1 -name "*Router.swift" 2>/dev/null | head -1)"
+ROUTER="$(find "$API_BASE" -maxdepth 1 -name "*Router.swift" 2>/dev/null | head -1 || true)"
 if [ -n "$ROUTER" ]; then
   API_FLAGS+=(--api-router "$ROUTER")
   # Service dir: prefer API/Service, else API itself
@@ -63,7 +83,7 @@ fi
 # ── Auto-discover flow file ───────────────────────────────────────────────────
 FLOW_FLAGS=()
 FLOW_DIR="$MODULE_DIR/$MODULE_NAME/Flow"
-FLOW_FILE="$(find "$FLOW_DIR" -maxdepth 1 -name "*.swift" 2>/dev/null | head -1)"
+FLOW_FILE="$(find "$FLOW_DIR" -maxdepth 1 -name "*.swift" 2>/dev/null | head -1 || true)"
 if [ -n "$FLOW_FILE" ]; then
   FLOW_FLAGS+=(--flow-file "$FLOW_FILE")
   echo "Flow file:  $FLOW_FILE"
@@ -74,7 +94,7 @@ fi
 # ── Run ───────────────────────────────────────────────────────────────────────
 echo ""
 echo "Generating → $OUTPUT"
-swift run --package-path Tools/HLDGen hldgen \
+swift run --package-path "$PKG" hldgen \
   "${SCENE_DIRS[@]}" \
   --module "$MODULE_NAME" \
   "${API_FLAGS[@]}" \

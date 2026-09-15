@@ -113,7 +113,10 @@ figma.ui.onmessage = async (msg) => {
         || dest.includes('exits')
         || dest.includes('completes')
         || dest.includes('closes flow')
-        || dest.includes('pops to root');
+        || dest.includes('pops to root')
+        // Parser artifacts: a bare navigation verb with no real destination behind it
+        || /^(present|show|push|pop|dismiss):/.test(dest)
+        || /^(back|self|nav)$/i.test(dest.trim());
     }
 
     for (const { sticky, chain, sourceFrame } of stickyRecords) {

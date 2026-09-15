@@ -9,7 +9,7 @@ enum Architecture {
 }
 
 func detectArchitecture(in dir: URL) -> Architecture {
-    let files = findFiles(under: dir, extensions: ["swift"])
+    let files = findSceneFiles(under: dir, extensions: ["swift"])
     var hasInteractor = false
     var hasRouter     = false
     var hasViewModel  = false

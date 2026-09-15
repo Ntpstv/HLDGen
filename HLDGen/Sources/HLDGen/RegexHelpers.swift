@@ -42,3 +42,30 @@ func findFiles(under dir: URL, extensions: Set<String>) -> [URL] {
     }
     return result.sorted { $0.path < $1.path }
 }
+
+/// True if `dir` directly holds a `*ViewController.swift` — i.e. it is a scene in its own right.
+func isSceneDir(_ dir: URL) -> Bool {
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+    return names.contains { $0.hasSuffix("ViewController.swift") }
+}
+
+/// Like `findFiles`, but stops at nested scenes. A folder such as `Scenes/Home` often holds its own
+/// `PTPHomeViewController.swift` *and* a subfolder per sibling screen; walking it recursively would
+/// collapse ten separate screens into one. Descent stops at any subdirectory that is itself a scene.
+func findSceneFiles(under dir: URL, extensions: Set<String>) -> [URL] {
+    guard let en = FileManager.default.enumerator(
+        at: dir, includingPropertiesForKeys: [.isDirectoryKey]
+    ) else { return [] }
+    var result: [URL] = []
+    for case let url as URL in en {
+        let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+        if isDir {
+            if isSceneDir(url) { en.skipDescendants() }
+            continue
+        }
+        if extensions.contains(url.pathExtension.lowercased()) {
+            result.append(url)
+        }
+    }
+    return result.sorted { $0.path < $1.path }
+}

@@ -157,10 +157,10 @@ func parseStoryboardFile(_ url: URL) -> [StoryboardResult] {
 /// Find and parse every .xib/.storyboard directly under a scene directory.
 func parseSceneStoryboards(in sceneDir: URL) -> [StoryboardResult] {
     var results: [StoryboardResult] = []
-    for xib in findFiles(under: sceneDir, extensions: ["xib"]) {
+    for xib in findSceneFiles(under: sceneDir, extensions: ["xib"]) {
         if let r = parseXibFile(xib) { results.append(r) }
     }
-    for sb in findFiles(under: sceneDir, extensions: ["storyboard"]) {
+    for sb in findSceneFiles(under: sceneDir, extensions: ["storyboard"]) {
         results.append(contentsOf: parseStoryboardFile(sb))
     }
     return results

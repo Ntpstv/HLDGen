@@ -5,7 +5,7 @@ import Foundation
 /// @StateObject/@ObservedObject ViewModel calls, and async API calls.
 func analyzeSwiftUI(module: String, sceneName: String, sceneDir: URL,
                     serviceEndpoints: [String: ApiEndpoint]) -> SceneResult {
-    let files = findFiles(under: sceneDir, extensions: ["swift"])
+    let files = findSceneFiles(under: sceneDir, extensions: ["swift"])
     var viewNames: [String] = []
     var actionChains: [ActionChain] = []
     var servicesUsed: Set<String> = []

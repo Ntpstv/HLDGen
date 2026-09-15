@@ -76,7 +76,7 @@ private func analyzeCleanSwift(module: String, sceneName: String, sceneDir: URL,
     // class scope, not inside any single function. Scanned once per file, applied wherever a call site uses
     // the property name instead of the class name directly.
     var propertyServiceMap: [String: String] = [:]
-    let swiftFiles = findFiles(under: sceneDir, extensions: ["swift"])
+    let swiftFiles = findSceneFiles(under: sceneDir, extensions: ["swift"])
 
     for file in swiftFiles {
         let fname = file.lastPathComponent

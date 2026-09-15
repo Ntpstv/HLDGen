@@ -4,7 +4,7 @@ import Foundation
 /// Extracts ViewModel inputs/outputs, Combine/@Published bindings, and API calls.
 func analyzeMVVM(module: String, sceneName: String, sceneDir: URL,
                  serviceEndpoints: [String: ApiEndpoint]) -> SceneResult {
-    let files = findFiles(under: sceneDir, extensions: ["swift"])
+    let files = findSceneFiles(under: sceneDir, extensions: ["swift"])
     var viewControllers: [String] = []
     var viewModels: [String] = []
     var actionChains: [ActionChain] = []

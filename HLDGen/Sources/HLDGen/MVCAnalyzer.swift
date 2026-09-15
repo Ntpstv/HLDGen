@@ -4,7 +4,7 @@ import Foundation
 /// Extracts IBActions, segues, direct API/URLSession calls, and navigation calls.
 func analyzeMVC(module: String, sceneName: String, sceneDir: URL,
                 serviceEndpoints: [String: ApiEndpoint]) -> SceneResult {
-    let files = findFiles(under: sceneDir, extensions: ["swift"])
+    let files = findSceneFiles(under: sceneDir, extensions: ["swift"])
     var viewControllers: [String] = []
     var actionChains: [ActionChain] = []
     var servicesUsed: Set<String> = []
