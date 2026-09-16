@@ -75,6 +75,10 @@ struct SceneResult: Codable {
     var id: String
     var name: String
     var module: String
+    /// Journey this scene belongs to — the folder directly under `Scenes/`, e.g. `AddMoney` for
+    /// `Scenes/AddMoney/ViaCasa/…`. Renderers group by this so a 99-screen module reads as ~19
+    /// journeys instead of one endless row. Assigned by main.swift, which knows the source path.
+    var group: String = ""
     var viewControllers: [String]
     var interactors: [String]
     var presenters: [String]

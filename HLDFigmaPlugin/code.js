@@ -34,6 +34,11 @@ const STICKY_GAP  = 12;
 const API_CLOUD_H = 70;
 const GHOST_W     = 200;
 const GHOST_H     = 90;
+const MAX_COLS       = 6;    // screens per row before a journey wraps
+const ROW_GAP        = 90;
+const GROUP_PAD      = 56;   // breathing room inside a journey boundary
+const GROUP_GAP      = 150;  // vertical space between journeys
+const GROUP_LABEL_H  = 44;
 
 figma.ui.onmessage = async (msg) => {
   if (msg.type !== 'generate') return;
@@ -45,37 +50,65 @@ figma.ui.onmessage = async (msg) => {
     // Match the HTML artifact's dark-navy canvas background
 
     const vcToFrame = new Map();   // vcClassName → screen card frame
-    const cards     = [];          // { scene, frame, vcName, col }
+    const cards     = [];          // { scene, frame, vcName, group }
 
-    // ── Pass 1: create all screen cards ──────────────────────────────────────
-    for (let col = 0; col < scenes.length; col++) {
-      const scene = scenes[col];
-      const x = col * (CARD_W + CARD_GAP);
-      const frame = await buildScreenCard(scene, x, 0);
-      figma.currentPage.appendChild(frame);
+    // ── Pass 0: split scenes into journeys ───────────────────────────────────
+    // A module's 99 screens laid out as one row is unreadable. `scene.group` is the folder
+    // under Scenes/ (AddMoney, Settings, PlayCard…), which is the journey a reader thinks in.
+    const journeys = new Map();   // groupName → scene[]
+    for (const scene of scenes) {
+      const g = scene.group || scene.module || 'Scenes';
+      if (!journeys.has(g)) journeys.set(g, []);
+      journeys.get(g).push(scene);
+    }
 
-      const vcName = (scene.viewControllers || [])[0] || `Scene${col}`;
-      vcToFrame.set(vcName, frame);
-      cards.push({ scene, frame, vcName, col });
+    // ── Pass 1: lay out each journey as its own block of rows ────────────────
+    const journeyBounds = [];   // { name, x, y, w, h }
+    let journeyTop = 0;
+
+    for (const [groupName, groupScenes] of journeys) {
+      const originX = GROUP_PAD;
+      const originY = journeyTop + GROUP_PAD + GROUP_LABEL_H;
+      let rowTop = originY;
+      let rowMaxH = 0;
+      let blockBottom = originY;
+
+      for (let i = 0; i < groupScenes.length; i++) {
+        const scene = groupScenes[i];
+        const col = i % MAX_COLS;
+        if (col === 0 && i > 0) {
+          rowTop += rowMaxH + ROW_GAP;
+          rowMaxH = 0;
+        }
+
+        const frame = await buildScreenCard(scene, originX + col * (CARD_W + CARD_GAP), rowTop);
+        figma.currentPage.appendChild(frame);
+
+        const vcName = (scene.viewControllers || [])[0] || `${groupName}${i}`;
+        vcToFrame.set(vcName, frame);
+        cards.push({ scene, frame, vcName, group: groupName });
+
+        const h = columnHeight(scene);
+        if (h > rowMaxH) rowMaxH = h;
+        blockBottom = Math.max(blockBottom, rowTop + h);
+      }
+
+      const cols = Math.min(groupScenes.length, MAX_COLS);
+      journeyBounds.push({
+        name: groupName,
+        x: originX,
+        y: originY,
+        w: cols * CARD_W + (cols - 1) * CARD_GAP,
+        h: blockBottom - originY,
+      });
+      journeyTop = blockBottom + GROUP_GAP;
     }
 
     // ── Pass 2: create sticky notes, track them for connectors ───────────────
-    const stickyRecords = [];   // { sticky, chain, sourceFrame }
+    const stickyRecords = [];   // { sticky, chain, sourceFrame, group }
 
-    for (const { scene, frame } of cards) {
-      const actions = (scene.actionChains || []).filter(a => {
-        // Skip pure lifecycle / setup boilerplate with no user-visible consequence
-        const name = (a.action || '').toLowerCase();
-        if (/^bind(ing)?$|^awakeFromNib$|^viewDidLayoutSubviews$|^prepareForReuse$|^setupHeaderData$/.test(name)) return false;
-        // Always keep recognisable user interactions (taps, swipes, gestures)
-        if (/\.rx\.tap|button|tap|gesture|swipe|select|press|click/i.test(a.action)) return true;
-        // Keep if has any destination, route, or API call (even "next queued" is worth showing)
-        const hasDest = (a.resolvedDestinations || []).length > 0;
-        const hasRoute = (a.vcRoutes || []).length > 0;
-        const hasApi = (a.calls || []).some(c => c.services && c.services.length > 0);
-        return hasDest || hasRoute || hasApi;
-      });
-
+    for (const { scene, frame, group } of cards) {
+      const actions = visibleActions(scene);
       const endpoints = scene.apiEndpoints || [];
       const serviceCalls = (scene.actionChains || [])
         .flatMap(a => (a.calls || []).flatMap(c => c.services || []));
@@ -91,7 +124,7 @@ figma.ui.onmessage = async (msg) => {
         sticky.x = frame.x + (CARD_W - STICKY_W) / 2;
         sticky.y = stickyY;
         figma.currentPage.appendChild(sticky);
-        stickyRecords.push({ sticky, chain, sourceFrame: frame });
+        stickyRecords.push({ sticky, chain, sourceFrame: frame, group });
         stickyY += STICKY_H + STICKY_GAP;
       }
 
@@ -101,6 +134,15 @@ figma.ui.onmessage = async (msg) => {
         cloud.y = stickyY + 8;
         figma.currentPage.appendChild(cloud);
       }
+    }
+
+    // ── Pass 2b: draw a labelled boundary behind each journey ────────────────
+    for (const b of journeyBounds) {
+      // insertChild(0, …) is the bottom of the z-order, so push the label in first
+      // and the box after it — otherwise the box's fill covers its own title.
+      const [box, label] = await buildJourneyBoundary(b);
+      figma.currentPage.insertChild(0, label);
+      figma.currentPage.insertChild(0, box);
     }
 
     // ── Pass 3: draw arrows sticky → destination (vector lines, not connectors) ─
@@ -119,7 +161,7 @@ figma.ui.onmessage = async (msg) => {
         || /^(back|self|nav)$/i.test(dest.trim());
     }
 
-    for (const { sticky, chain, sourceFrame } of stickyRecords) {
+    for (const { sticky, chain, sourceFrame, group } of stickyRecords) {
       const dests = [...(chain.resolvedDestinations || []), ...(chain.vcRoutes || [])];
       if (dests.length === 0) continue;
 
@@ -127,14 +169,21 @@ figma.ui.onmessage = async (msg) => {
         if (shouldSkipDest(dest)) continue;
 
         const targetFrame = findFrameForDest(dest, vcToFrame);
+        const targetCard  = targetFrame ? cards.find(c => c.frame === targetFrame) : null;
+        const shortDest   = dest.replace('ViewController', 'VC').replace(' screen', '').trim();
 
-        if (targetFrame && targetFrame !== sourceFrame) {
+        if (!targetFrame) {
+          // Outside the module entirely — a label reads better than a card plus a long arrow
+          appendExternalLabel(sticky, shortDest);
+        } else if (targetFrame === sourceFrame) {
+          // Self-route: nothing to draw
+        } else if (targetCard && targetCard.group !== group) {
+          // Hand-off to another journey. Drawn as an arrow it would cross the whole board — and
+          // those cross-journey lines are what made the canvas unreadable — so name the journey instead.
+          appendExternalLabel(sticky, `${shortDest} · ${targetCard.group}`);
+        } else {
           const arrow = buildArrow(sticky, targetFrame, C.accent);
           if (arrow) { figma.currentPage.appendChild(arrow); arrowCount++; }
-        } else if (!targetFrame) {
-          // External destination — append "(external)" label to sticky text instead of drawing a card + arrow
-          const shortDest = dest.replace('ViewController', 'VC').replace(' screen', '').trim();
-          appendExternalLabel(sticky, shortDest);
         }
       }
     }
@@ -401,6 +450,56 @@ async function buildSticky(chain, isExternal, cardW) {
   }
 
   return f;
+}
+
+// ── Which action chains earn a sticky ────────────────────────────────────────
+function visibleActions(scene) {
+  return (scene.actionChains || []).filter(a => {
+    // Skip pure lifecycle / setup boilerplate with no user-visible consequence
+    const name = (a.action || '').toLowerCase();
+    if (/^bind(ing)?$|^awakeFromNib$|^viewDidLayoutSubviews$|^prepareForReuse$|^setupHeaderData$/.test(name)) return false;
+    // Always keep recognisable user interactions (taps, swipes, gestures)
+    if (/\.rx\.tap|button|tap|gesture|swipe|select|press|click/i.test(a.action)) return true;
+    // Keep if has any destination, route, or API call (even "next queued" is worth showing)
+    const hasDest = (a.resolvedDestinations || []).length > 0;
+    const hasRoute = (a.vcRoutes || []).length > 0;
+    const hasApi = (a.calls || []).some(c => c.services && c.services.length > 0);
+    return hasDest || hasRoute || hasApi;
+  });
+}
+
+/// Full vertical extent of one screen's column — card, its stack of stickies, and any API cloud.
+/// Rows inside a journey are spaced by the tallest column, so a 76-sticky screen cannot overlap
+/// the row beneath it.
+function columnHeight(scene) {
+  const n = visibleActions(scene).length;
+  const hasApi = (scene.apiEndpoints || []).length > 0
+    || (scene.actionChains || []).some(a => (a.calls || []).some(c => (c.services || []).length > 0));
+  return CARD_H + 20 + n * (STICKY_H + STICKY_GAP) + (hasApi ? API_CLOUD_H + 16 : 0);
+}
+
+// ── Journey boundary: dashed box + title, drawn behind its screens ────────────
+async function buildJourneyBoundary(b) {
+  const box = figma.createRectangle();
+  box.name = `journey:${b.name}`;
+  box.x = b.x - GROUP_PAD;
+  box.y = b.y - GROUP_PAD;
+  box.resize(b.w + GROUP_PAD * 2, b.h + GROUP_PAD * 2);
+  box.fills = solid(C.surface, 0.35);
+  box.strokes = solid(C.border);
+  box.strokeWeight = 2;
+  box.dashPattern = [10, 8];
+  box.cornerRadius = 16;
+
+  const label = figma.createText();
+  label.fontName = { family: 'Inter', style: 'Semi Bold' };
+  label.fontSize = 22;
+  label.characters = b.name;
+  label.fills = solid(C.textHead, 0.9);
+  label.x = b.x - GROUP_PAD + 12;
+  label.y = b.y - GROUP_PAD - GROUP_LABEL_H + 6;
+
+  return [box, label];
 }
 
 // ── Append external destination label to an existing sticky ──────────────────

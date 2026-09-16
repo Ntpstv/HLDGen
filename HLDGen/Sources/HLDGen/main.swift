@@ -86,6 +86,20 @@ if let flowFileArg {
 
 // MARK: - Analyze all scene dirs
 
+/// The journey a scene belongs to: the folder directly beneath the container that holds all screens
+/// (`Scenes/` by convention, `Screen/` in some projects). `Scenes/AddMoney/ViaCasa/Confirm` and
+/// `Scenes/AddMoney/MainScreen` both return `AddMoney`. Falls back to the parent folder, then the module.
+func journeyGroup(for sceneDir: URL, module: String) -> String {
+    let parts = sceneDir.pathComponents
+    if let i = parts.lastIndex(where: { $0.caseInsensitiveCompare("Scenes") == .orderedSame
+                                     || $0.caseInsensitiveCompare("Screen") == .orderedSame }),
+       i + 1 < parts.count {
+        return parts[i + 1]
+    }
+    let parent = sceneDir.deletingLastPathComponent().lastPathComponent
+    return parent.isEmpty ? module : parent
+}
+
 var scenes: [SceneResult] = []
 for sceneDirPath in sceneDirArgs {
     let sceneDirURL = URL(fileURLWithPath: sceneDirPath)
@@ -94,8 +108,9 @@ for sceneDirPath in sceneDirArgs {
         continue
     }
     let sceneName = sceneDirURL.lastPathComponent
-    let result = analyzeScene(module: moduleName, sceneName: sceneName, sceneDir: sceneDirURL,
+    var result = analyzeScene(module: moduleName, sceneName: sceneName, sceneDir: sceneDirURL,
                               serviceEndpoints: serviceEndpoints, flowBindings: flowBindings)
+    result.group = journeyGroup(for: sceneDirURL, module: moduleName)
     scenes.append(result)
 }
 
