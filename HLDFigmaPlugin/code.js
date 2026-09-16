@@ -32,8 +32,6 @@ const STICKY_W    = 190;
 const STICKY_H    = 90;    // tall card-style stickies
 const STICKY_GAP  = 12;
 const API_CLOUD_H = 70;
-const GHOST_W     = 200;
-const GHOST_H     = 90;
 const MAX_COLS       = 6;    // screens per row before a journey wraps
 const JOURNEY_COLS   = 3;    // journey blocks packed side by side
 const MAX_STICKIES   = 8;    // per screen; the rest are summarised in a "+N more" chip
@@ -59,9 +57,6 @@ figma.ui.onmessage = async (msg) => {
       if (node.getPluginData('hldgen') === '1') node.remove();
     }
 
-    const vcToFrame = new Map();   // vcClassName → screen card frame
-    const cards     = [];          // { scene, frame, vcName, group }
-
     // ── Pass 0: split scenes into journeys ───────────────────────────────────
     // A module's 99 screens laid out as one row is unreadable. `scene.group` is the folder
     // under Scenes/ (AddMoney, Settings, PlayCard…), which is the journey a reader thinks in.
@@ -72,7 +67,38 @@ figma.ui.onmessage = async (msg) => {
       journeys.get(g).push(scene);
     }
 
-    // ── Pass 1: measure every journey, then pack the blocks into columns ─────
+    // ── Pass 1: resolve the navigation graph before anything is drawn ────────
+    // Screens are placed in flow order, so which screen leads to which has to be known first.
+    const vcToScene = new Map();
+    for (const s of scenes) for (const v of (s.viewControllers || [])) vcToScene.set(v, s);
+
+    const edges = new Map();        // "srcName->dstName" → { from, to, count }
+    const externals = new Map();    // scene → Set(label)   destinations outside this journey
+    for (const s of scenes) {
+      for (const chain of visibleActions(s)) {
+        for (const dest of [...(chain.resolvedDestinations || []), ...(chain.vcRoutes || [])]) {
+          if (shouldSkipDest(dest)) continue;
+          const short = dest.replace('ViewController', 'VC').replace(' screen', '').trim();
+          const t = findFrameForDest(dest, vcToScene);   // map values are scenes here
+
+          if (!externals.has(s)) externals.set(s, new Set());
+          if (!t)                   { externals.get(s).add(short); continue; }
+          if (t === s)              continue;                       // self-route, nothing to draw
+          if (t.group !== s.group)  { externals.get(s).add(`${short} · ${t.group}`); continue; }
+
+          const k = `${s.name}->${t.name}`;
+          // Six buttons leading to the same screen is one relationship, not six arrows.
+          if (edges.has(k)) edges.get(k).count++;
+          else edges.set(k, { from: s, to: t, count: 1 });
+        }
+      }
+    }
+
+    // Order each journey so a screen comes after whatever leads into it, which keeps
+    // arrows pointing forward and short instead of doubling back across the block.
+    for (const [name, gs] of journeys) journeys.set(name, flowOrder(gs, edges));
+
+    // ── Pass 2: measure every journey, then pack the blocks into columns ─────
     // Stacking journeys in one vertical ribbon made the board ~43000px tall and impossible
     // to scan. Measuring first lets each block drop into whichever column is currently
     // shortest, which keeps the whole HLD roughly square.
@@ -92,12 +118,17 @@ figma.ui.onmessage = async (msg) => {
     // Tallest first, so the big journeys anchor the columns and the small ones fill the gaps.
     measured.sort((a, b) => b.h - a.h);
 
-    const colCount  = Math.max(1, Math.min(JOURNEY_COLS, measured.length));
-    const colWidth  = MAX_COLS * CARD_W + (MAX_COLS - 1) * CARD_GAP + GROUP_PAD * 2 + GROUP_GAP;
+    const colCount   = Math.max(1, Math.min(JOURNEY_COLS, measured.length));
+    const colWidth   = MAX_COLS * CARD_W + (MAX_COLS - 1) * CARD_GAP + GROUP_PAD * 2 + GROUP_GAP;
     const colHeights = new Array(colCount).fill(0);
 
-    const journeyBounds = [];   // { name, x, y, w, h }
+    const journeyBounds = [];        // { name, x, y, w, h }
+    const sceneToGroup  = new Map(); // scene → its container frame
 
+    // ── Pass 3: build one container per screen ──────────────────────────────
+    // Card, stickies and API cloud used to sit on the page as 537 separate top-level
+    // frames, and Figma draws every one of their names above them — that grey
+    // "sticky:…" haze over the whole board. Nesting them leaves ~115 named nodes.
     for (const m of measured) {
       let c = 0;
       for (let i = 1; i < colCount; i++) if (colHeights[i] < colHeights[c]) c = i;
@@ -111,72 +142,19 @@ figma.ui.onmessage = async (msg) => {
         const col = i % MAX_COLS;
         if (col === 0 && i > 0) rowTop += m.rowHeights[Math.floor(i / MAX_COLS) - 1] + ROW_GAP;
 
-        const frame = await buildScreenCard(scene, originX + col * (CARD_W + CARD_GAP), rowTop);
-        tag(frame);
-        figma.currentPage.appendChild(frame);
-
-        const vcName = (scene.viewControllers || [])[0] || `${m.name}${i}`;
-        vcToFrame.set(vcName, frame);
-        cards.push({ scene, frame, vcName, group: m.name });
+        const container = await buildScreenGroup(scene, externals.get(scene));
+        container.x = originX + col * (CARD_W + CARD_GAP);
+        container.y = rowTop;
+        tag(container);
+        figma.currentPage.appendChild(container);
+        sceneToGroup.set(scene, container);
       }
 
       colHeights[c] = originY + m.h + GROUP_PAD + GROUP_GAP;
-      journeyBounds.push({
-        name: m.name,
-        x: originX,
-        y: originY,
-        w: m.w,
-        h: m.h,
-      });
+      journeyBounds.push({ name: m.name, x: originX, y: originY, w: m.w, h: m.h });
     }
 
-    // ── Pass 2: create sticky notes, track them for connectors ───────────────
-    const stickyRecords = [];   // { sticky, chain, sourceFrame, group }
-
-    for (const { scene, frame, group } of cards) {
-      const all = visibleActions(scene);
-      const actions = all.slice(0, MAX_STICKIES);
-      const endpoints = scene.apiEndpoints || [];
-      const serviceCalls = (scene.actionChains || [])
-        .flatMap(a => (a.calls || []).flatMap(c => c.services || []));
-
-      let stickyY = frame.y + CARD_H + 20;
-
-      for (const chain of actions) {
-        const dest = [...(chain.resolvedDestinations || []), ...(chain.vcRoutes || [])][0] || '';
-        const isExternal = dest && !findFrameForDest(dest, vcToFrame) &&
-                           !dest.includes('exits') && !dest.includes('completes');
-
-        const sticky = await buildSticky(chain, isExternal, STICKY_W);
-        sticky.x = frame.x + (CARD_W - STICKY_W) / 2;
-        sticky.y = stickyY;
-        tag(sticky);
-        figma.currentPage.appendChild(sticky);
-        stickyRecords.push({ sticky, chain, sourceFrame: frame, group });
-        stickyY += STICKY_H + STICKY_GAP;
-      }
-
-      // One screen had 76 chains, and a column that tall buries every neighbouring row.
-      // The rest stay in the JSON; the board just says how many were left off.
-      if (all.length > actions.length) {
-        const more = await buildMoreChip(all.length - actions.length, STICKY_W);
-        more.x = frame.x + (CARD_W - STICKY_W) / 2;
-        more.y = stickyY;
-        tag(more);
-        figma.currentPage.appendChild(more);
-        stickyY += MORE_CHIP_H + STICKY_GAP;
-      }
-
-      if (endpoints.length > 0 || serviceCalls.length > 0) {
-        const cloud = await buildApiCloud(endpoints, serviceCalls, CARD_W);
-        cloud.x = frame.x;
-        cloud.y = stickyY + 8;
-        tag(cloud);
-        figma.currentPage.appendChild(cloud);
-      }
-    }
-
-    // ── Pass 2b: draw a labelled boundary behind each journey ────────────────
+    // ── Pass 4: labelled boundary behind each journey ────────────────────────
     for (const b of journeyBounds) {
       // insertChild(0, …) is the bottom of the z-order, so push the label in first
       // and the box after it — otherwise the box's fill covers its own title.
@@ -186,51 +164,23 @@ figma.ui.onmessage = async (msg) => {
       figma.currentPage.insertChild(0, box);
     }
 
-    // ── Pass 3: draw arrows sticky → destination (vector lines, not connectors) ─
+    // ── Pass 5: one arrow per screen-to-screen relationship ─────────────────
     let arrowCount = 0;
-
-    // Destinations we never draw arrows for — not meaningful on an HLD diagram
-    function shouldSkipDest(dest) {
-      return !dest
-        || dest.includes('next queued')
-        || dest.includes('exits')
-        || dest.includes('completes')
-        || dest.includes('closes flow')
-        || dest.includes('pops to root')
-        // Parser artifacts: a bare navigation verb with no real destination behind it
-        || /^(present|show|push|pop|dismiss):/.test(dest)
-        || /^(back|self|nav)$/i.test(dest.trim());
+    for (const { from, to, count } of edges.values()) {
+      if (from.group !== to.group) continue;
+      const a = sceneToGroup.get(from), b = sceneToGroup.get(to);
+      if (!a || !b) continue;
+      const arrow = buildArrow(a, b, C.accent);
+      if (!arrow) continue;
+      arrow.name = count > 1 ? `${from.name} → ${to.name} (${count} actions)`
+                             : `${from.name} → ${to.name}`;
+      tag(arrow);
+      figma.currentPage.appendChild(arrow);
+      arrowCount++;
     }
 
-    for (const { sticky, chain, sourceFrame, group } of stickyRecords) {
-      const dests = [...(chain.resolvedDestinations || []), ...(chain.vcRoutes || [])];
-      if (dests.length === 0) continue;
-
-      for (const dest of dests) {
-        if (shouldSkipDest(dest)) continue;
-
-        const targetFrame = findFrameForDest(dest, vcToFrame);
-        const targetCard  = targetFrame ? cards.find(c => c.frame === targetFrame) : null;
-        const shortDest   = dest.replace('ViewController', 'VC').replace(' screen', '').trim();
-
-        if (!targetFrame) {
-          // Outside the module entirely — a label reads better than a card plus a long arrow
-          appendExternalLabel(sticky, shortDest);
-        } else if (targetFrame === sourceFrame) {
-          // Self-route: nothing to draw
-        } else if (targetCard && targetCard.group !== group) {
-          // Hand-off to another journey. Drawn as an arrow it would cross the whole board — and
-          // those cross-journey lines are what made the canvas unreadable — so name the journey instead.
-          appendExternalLabel(sticky, `${shortDest} · ${targetCard.group}`);
-        } else {
-          const arrow = buildArrow(sticky, targetFrame, C.accent);
-          if (arrow) { tag(arrow); figma.currentPage.appendChild(arrow); arrowCount++; }
-        }
-      }
-    }
-
-    figma.viewport.scrollAndZoomIntoView(cards.map(c => c.frame));
-    figma.ui.postMessage({ type: 'done', detail: `${scenes.length} screens · ${arrowCount} arrows` });
+    figma.viewport.scrollAndZoomIntoView([...sceneToGroup.values()]);
+    figma.ui.postMessage({ type: 'done', detail: `${scenes.length} screens · ${journeys.size} journeys · ${arrowCount} arrows` });
   } catch (e) {
     figma.ui.postMessage({ type: 'error', detail: String(e) });
   }
@@ -493,6 +443,99 @@ async function buildSticky(chain, isExternal, cardW) {
   return f;
 }
 
+// ── Destinations that are never a real screen-to-screen move ─────────────────
+function shouldSkipDest(dest) {
+  return !dest
+    || dest.includes('next queued')
+    || dest.includes('exits')
+    || dest.includes('completes')
+    || dest.includes('closes flow')
+    || dest.includes('pops to root')
+    // Parser artifacts: a bare navigation verb with no real destination behind it
+    || /^(present|show|push|pop|dismiss):/.test(dest)
+    || /^(back|self|nav)$/i.test(dest.trim());
+}
+
+/// Orders a journey's screens so every screen follows the ones that navigate into it
+/// (Kahn's algorithm). Arrows then run forward instead of doubling back across the block.
+/// Real navigation graphs contain cycles — a confirm screen returning to its input — so
+/// whatever a cycle leaves unplaced is appended in its original order rather than dropped.
+function flowOrder(sceneList, edges) {
+  const inDegree = new Map(sceneList.map(s => [s, 0]));
+  const out = new Map(sceneList.map(s => [s, []]));
+  for (const { from, to } of edges.values()) {
+    if (!inDegree.has(from) || !inDegree.has(to)) continue;   // different journey
+    out.get(from).push(to);
+    inDegree.set(to, inDegree.get(to) + 1);
+  }
+
+  const queue = sceneList.filter(s => inDegree.get(s) === 0);
+  const ordered = [];
+  while (queue.length) {
+    const s = queue.shift();
+    ordered.push(s);
+    for (const next of out.get(s)) {
+      inDegree.set(next, inDegree.get(next) - 1);
+      if (inDegree.get(next) === 0) queue.push(next);
+    }
+  }
+  for (const s of sceneList) if (!ordered.includes(s)) ordered.push(s);
+  return ordered;
+}
+
+// ── One screen as a single node: card + stickies + API cloud ─────────────────
+// Figma labels every top-level node, so leaving these loose put 537 names on the board.
+async function buildScreenGroup(scene, externalLabels) {
+  const all      = visibleActions(scene);
+  const actions  = all.slice(0, MAX_STICKIES);
+  const endpoints    = scene.apiEndpoints || [];
+  const serviceCalls = (scene.actionChains || [])
+    .flatMap(a => (a.calls || []).flatMap(c => c.services || []));
+
+  const group = figma.createFrame();
+  group.name = `${scene.group} · ${scene.name}`;
+  group.resize(CARD_W, columnHeight(scene));
+  group.fills = noFill();
+  group.clipsContent = false;
+
+  const card = await buildScreenCard(scene, 0, 0);
+  group.appendChild(card);
+
+  let y = CARD_H + 20;
+  const stickyX = (CARD_W - STICKY_W) / 2;
+
+  for (const chain of actions) {
+    const dest = [...(chain.resolvedDestinations || []), ...(chain.vcRoutes || [])][0] || '';
+    const isExternal = dest && !dest.includes('exits') && !dest.includes('completes')
+      && [...(externalLabels || [])].some(l => l.startsWith(dest.replace('ViewController', 'VC').trim()));
+
+    const sticky = await buildSticky(chain, isExternal, STICKY_W);
+    sticky.x = stickyX;
+    sticky.y = y;
+    group.appendChild(sticky);
+    y += STICKY_H + STICKY_GAP;
+  }
+
+  // One screen had 76 chains, and a column that tall buries every neighbouring row.
+  // The rest stay in the JSON; the board just says how many were left off.
+  if (all.length > actions.length) {
+    const more = await buildMoreChip(all.length - actions.length, STICKY_W);
+    more.x = stickyX;
+    more.y = y;
+    group.appendChild(more);
+    y += MORE_CHIP_H + STICKY_GAP;
+  }
+
+  if (endpoints.length > 0 || serviceCalls.length > 0) {
+    const cloud = await buildApiCloud(endpoints, serviceCalls, CARD_W);
+    cloud.x = 0;
+    cloud.y = y + 8;
+    group.appendChild(cloud);
+  }
+
+  return group;
+}
+
 // ── Which action chains earn a sticky ────────────────────────────────────────
 function visibleActions(scene) {
   return (scene.actionChains || []).filter(a => {
@@ -570,75 +613,6 @@ async function buildJourneyBoundary(b) {
   label.y = b.y - GROUP_PAD - GROUP_LABEL_H + 6;
 
   return [box, label];
-}
-
-// ── Append external destination label to an existing sticky ──────────────────
-function appendExternalLabel(sticky, destName) {
-  // Find the smallest-font TEXT node (the subtitle) and append external dest
-  let subNode = null;
-  for (const child of sticky.children) {
-    if (child.type === 'TEXT' && child.fontSize <= 10) {
-      if (!subNode || child.fontSize < subNode.fontSize) subNode = child;
-    }
-  }
-  if (subNode) {
-    const current = subNode.characters;
-    subNode.characters = current + (current ? '\n' : '') + '↗ ' + destName + ' (ext)';
-  }
-}
-
-// ── Build ghost card for external module reference ────────────────────────────
-async function buildGhostCard(destName) {
-  const shortName = destName
-    .replace('ViewController', '')
-    .replace('screen', '')
-    .replace('exits module', 'exits')
-    .trim();
-
-  const f = figma.createFrame();
-  f.name = `external:${shortName}`;
-  f.resize(GHOST_W, GHOST_H);
-  f.fills = solid(C.amber, 0.08);
-  f.strokes = [{ type: 'SOLID', color: C.amber }];
-  f.strokeWeight = 1.5;
-  f.strokeAlign = 'INSIDE';
-  f.cornerRadius = 8;
-  f.dashPattern = [6, 4];
-
-  // Badge
-  const badge = figma.createFrame();
-  badge.name = 'badge';
-  badge.resize(60, 14);
-  badge.x = GHOST_W - 68; badge.y = 8;
-  badge.fills = solid(C.amber, 0.2);
-  badge.cornerRadius = 3;
-  f.appendChild(badge);
-
-  const badgeT = figma.createText();
-  badgeT.fontName = { family: 'Inter', style: 'Semi Bold' };
-  badgeT.fontSize = 7;
-  badgeT.characters = 'external';
-  badgeT.fills = solid(C.amber);
-  badgeT.x = 4; badgeT.y = 3;
-  badge.appendChild(badgeT);
-
-  const nameT = figma.createText();
-  nameT.fontName = { family: 'Inter', style: 'Semi Bold' };
-  nameT.fontSize = 11;
-  nameT.characters = truncate(shortName, 28);
-  nameT.fills = solid(C.amber);
-  nameT.x = 10; nameT.y = 30;
-  f.appendChild(nameT);
-
-  const subT = figma.createText();
-  subT.fontName = { family: 'Inter', style: 'Regular' };
-  subT.fontSize = 8.5;
-  subT.characters = '— not part of this module';
-  subT.fills = solid(C.amber, 0.55);
-  subT.x = 10; subT.y = 50;
-  f.appendChild(subT);
-
-  return f;
 }
 
 // ── Build API cloud ───────────────────────────────────────────────────────────
