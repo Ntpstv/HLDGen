@@ -62,6 +62,12 @@ struct ApiEndpoint: Codable {
     var caseName: String
     var path: String
     var method: String
+    /// Service class the scene actually calls, when the endpoint was reached through one.
+    var service: String = ""
+    /// Request/response model type names, read from `BaseService<API, Request, Response>`.
+    /// Empty when the service does not follow that generic shape.
+    var requestType: String = ""
+    var responseType: String = ""
 }
 
 /// Full HLD for one module — multiple scenes bundled into one file for the Figma plugin.

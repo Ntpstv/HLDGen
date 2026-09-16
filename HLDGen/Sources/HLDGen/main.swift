@@ -45,6 +45,9 @@ var apiDirArg: String?
 var apiRouterArg: String?
 var flowFileArg: String?
 var outputArg: String?
+/// Repeatable. Service classes usually live in a shared framework outside the module, so their
+/// location cannot be derived from the scene paths.
+var serviceDirArgs: [String] = []
 
 var i = 0
 while i < args.count {
@@ -53,6 +56,7 @@ while i < args.count {
     case "--api-dir":  i += 1; if i < args.count { apiDirArg = args[i] }
     case "--api-router": i += 1; if i < args.count { apiRouterArg = args[i] }
     case "--flow-file": i += 1; if i < args.count { flowFileArg = args[i] }
+    case "--services-dir": i += 1; if i < args.count { serviceDirArgs.append(args[i]) }
     case "-o", "--output": i += 1; if i < args.count { outputArg = args[i] }
     default:
         // All non-flag positional args are treated as scene dirs
@@ -66,17 +70,11 @@ guard !sceneDirArgs.isEmpty else { printUsageAndExit() }
 // MARK: - Resolve service-class -> endpoint
 
 var serviceEndpoints: [String: ApiEndpoint] = [:]
-if let apiRouterArg, let apiDirArg {
-    let endpointsByCase = Dictionary(uniqueKeysWithValues:
-        parseApiRouterFile(URL(fileURLWithPath: apiRouterArg)).map { ($0.caseName, $0) })
-    let apiDirURL = URL(fileURLWithPath: apiDirArg)
-    for file in findFiles(under: apiDirURL, extensions: ["swift"]) {
-        let src = readFile(file)
-        guard let classMatch = src.firstMatch(#"class\s+(\w+Service)\b"#) else { continue }
-        guard let call = findRouterCall(in: src),
-              let endpoint = endpointsByCase[call.caseName] else { continue }
-        serviceEndpoints[classMatch[1]] = endpoint
-    }
+let scanRoots = serviceDirArgs.isEmpty
+    ? [apiDirArg].compactMap { $0 }.map { URL(fileURLWithPath: $0) }
+    : serviceDirArgs.map { URL(fileURLWithPath: $0) }
+if !scanRoots.isEmpty {
+    serviceEndpoints = resolveServiceEndpoints(scanRoots: scanRoots)
 }
 
 var flowBindings: [FlowScreenBinding] = []

@@ -63,22 +63,14 @@ fi
 echo "Found ${#SCENE_DIRS[@]} scene(s):"
 for s in "${SCENE_DIRS[@]}"; do echo "  $s"; done
 
-# ── Auto-discover API router ──────────────────────────────────────────────────
+# ── API scan roots ───────────────────────────────────────────────────────────
+# A screen calls a Service, which names an API class, which calls a Router case that finally
+# holds the path. Those three layers routinely live in three different frameworks, so scanning
+# only the module's own API folder resolves nothing. Hand the analyzer the whole repo.
 API_FLAGS=()
-API_BASE="$MODULE_DIR/$MODULE_NAME/API"
-ROUTER="$(find "$API_BASE" -maxdepth 1 -name "*Router.swift" 2>/dev/null | head -1 || true)"
-if [ -n "$ROUTER" ]; then
-  API_FLAGS+=(--api-router "$ROUTER")
-  # Service dir: prefer API/Service, else API itself
-  if [ -d "$API_BASE/Service" ]; then
-    API_FLAGS+=(--api-dir "$API_BASE/Service")
-  else
-    API_FLAGS+=(--api-dir "$API_BASE")
-  fi
-  echo "API router: $ROUTER"
-else
-  echo "No API router found (skipping --api-router)"
-fi
+SCAN_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+API_FLAGS+=(--services-dir "$SCAN_ROOT")
+echo "API scan root: $SCAN_ROOT"
 
 # ── Auto-discover flow file ───────────────────────────────────────────────────
 FLOW_FLAGS=()
