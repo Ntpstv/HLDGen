@@ -33,7 +33,7 @@ const PANEL_GAP     = 12;
 const PANEL_HEAD_H  = 24;
 const PANEL_PAD     = 10;
 const ROW_H         = 14;
-const API_ROW_H     = 27;   // endpoint line plus its request/response line
+const API_ROW_H     = 42;   // endpoint line plus its request and response field lines
 const MAX_NAV_ROWS  = 8;
 const MAX_API_ROWS  = 6;
 const MAX_COLS       = 6;    // screens per row before a journey wraps
@@ -506,16 +506,23 @@ async function buildApiPanel(endpoints) {
     line.x = 10; line.y = top;
     f.appendChild(line);
 
-    // Request/response model names come from BaseService<API, Request, Response>.
-    if (e.requestType || e.responseType) {
-      const models = figma.createText();
-      models.fontName = { family: 'Inter', style: 'Regular' };
-      models.fontSize = 8;
-      models.characters = truncate(`req ${e.requestType || '—'}   resp ${e.responseType || '—'}`, 52);
-      models.fills = solid(C.textDim);
-      models.x = 10; models.y = top + 13;
-      f.appendChild(models);
-    }
+    // Field names come from the request/response models the service declares, so the panel
+    // shows the actual payload instead of a type name nobody can look up from the board.
+    const payload = [
+      { label: 'req ', fields: e.requestFields,  fallback: e.requestType },
+      { label: 'resp', fields: e.responseFields, fallback: e.responseType },
+    ];
+    payload.forEach((p, j) => {
+      const names = (p.fields || []).map(f => f.json);
+      const text = names.length ? names.join(', ') : (p.fallback || '—');
+      const t = figma.createText();
+      t.fontName = { family: 'Inter', style: 'Regular' };
+      t.fontSize = 8;
+      t.characters = `${p.label}  ${truncate(text, 50)}`;
+      t.fills = solid(C.textDim);
+      t.x = 16; t.y = top + 13 + j * 11;
+      f.appendChild(t);
+    });
   });
 
   return f;

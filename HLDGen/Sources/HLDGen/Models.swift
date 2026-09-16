@@ -68,6 +68,17 @@ struct ApiEndpoint: Codable {
     /// Empty when the service does not follow that generic shape.
     var requestType: String = ""
     var responseType: String = ""
+    /// Fields of those models, so the HLD can show the actual payload rather than a type name.
+    var requestFields: [ApiField] = []
+    var responseFields: [ApiField] = []
+}
+
+/// One field of a request or response model.
+struct ApiField: Codable {
+    /// JSON key on the wire — taken from `field <- map["key"]` or `CodingKeys` where they differ
+    /// from the Swift property name.
+    var json: String
+    var type: String
 }
 
 /// Full HLD for one module — multiple scenes bundled into one file for the Figma plugin.

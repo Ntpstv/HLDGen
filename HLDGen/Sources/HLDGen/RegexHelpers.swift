@@ -15,6 +15,22 @@ extension String {
         }
     }
 
+    /// Like `matches`, but also reports where each match starts — needed when the text after a
+    /// match has to be brace-matched (a type declaration followed by its body).
+    func matchesWithRange(_ pattern: String,
+                          options: NSRegularExpression.Options = []) -> [(groups: [String], start: Index)] {
+        guard let re = try? NSRegularExpression(pattern: pattern, options: options) else { return [] }
+        let ns = self as NSString
+        return re.matches(in: self, range: NSRange(location: 0, length: ns.length)).compactMap { match in
+            let groups = (0..<match.numberOfRanges).map { i -> String in
+                let r = match.range(at: i)
+                return r.location == NSNotFound ? "" : ns.substring(with: r)
+            }
+            guard let start = Range(match.range, in: self)?.lowerBound else { return nil }
+            return (groups, start)
+        }
+    }
+
     /// First match's capture groups (group 1..), or nil if no match.
     func firstMatch(_ pattern: String, options: NSRegularExpression.Options = []) -> [String]? {
         guard let re = try? NSRegularExpression(pattern: pattern, options: options) else { return nil }

@@ -74,19 +74,61 @@ func parseApiClassRouterCalls(in dirs: [URL]) -> [String: String] {
     return calls
 }
 
-/// Joins the three layers into the lookup the analysers use: service class name → endpoint.
+/// Joins every layer into the lookup the analysers use: service class name → endpoint.
+/// One walk, reading each file once — four separate passes over a 15,000-file repo is four times
+/// the I/O for the same answer.
 func resolveServiceEndpoints(scanRoots: [URL]) -> [String: ApiEndpoint] {
-    let endpoints = parseAllRouters(in: scanRoots)
-    let bindings  = parseServiceBindings(in: scanRoots)
-    let apiCalls  = parseApiClassRouterCalls(in: scanRoots)
+    var endpoints: [String: ApiEndpoint] = [:]   // "RouterType.caseName" → endpoint
+    var bindings:  [String: ServiceBinding] = [:]
+    var apiCalls:  [String: String] = [:]        // api class → "RouterType.caseName"
+    var models:    [String: ModelDef] = [:]
+
+    for root in scanRoots {
+        for file in findFiles(under: root, extensions: ["swift"]) {
+            let src = readFile(file)
+
+            if file.lastPathComponent.hasSuffix("Router.swift") {
+                let routerType = src.firstMatch(#"(?:enum|struct|class)\s+(\w*Router)\b"#)?[1]
+                    ?? file.deletingPathExtension().lastPathComponent
+                for endpoint in parseApiRouterFile(file) {
+                    let key = "\(routerType).\(endpoint.caseName)"
+                    if endpoints[key] == nil { endpoints[key] = endpoint }
+                }
+            }
+
+            if src.contains("BaseService<") {
+                for m in src.matches(#"class\s+(\w+)\s*:\s*\w*BaseService\s*<([^>]+)>"#) {
+                    let args = m[2].split(separator: ",").map {
+                        $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    guard args.count >= 3 else { continue }
+                    bindings[m[1]] = ServiceBinding(api: args[0],
+                                                    requestType: args[1],
+                                                    responseType: args[2])
+                }
+            }
+
+            if src.contains("Router."),
+               let decl = src.firstMatch(#"(?:class|struct|enum)\s+(\w+)"#),
+               let call = findRouterCall(in: src) {
+                apiCalls[decl[1]] = "\(call.router).\(call.caseName)"
+            }
+
+            for (name, def) in parseModels(in: src) where models[name] == nil {
+                models[name] = def
+            }
+        }
+    }
 
     var resolved: [String: ApiEndpoint] = [:]
     for (service, binding) in bindings {
         guard let key = apiCalls[binding.api],
               var endpoint = endpoints[key] else { continue }
-        endpoint.service      = service
-        endpoint.requestType  = binding.requestType
-        endpoint.responseType = binding.responseType
+        endpoint.service       = service
+        endpoint.requestType   = binding.requestType
+        endpoint.responseType  = binding.responseType
+        endpoint.requestFields  = fieldsFor(binding.requestType, in: models)
+        endpoint.responseFields = fieldsFor(binding.responseType, in: models)
         resolved[service] = endpoint
     }
 
