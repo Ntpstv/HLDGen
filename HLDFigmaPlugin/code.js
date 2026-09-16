@@ -35,6 +35,9 @@ const API_CLOUD_H = 70;
 const GHOST_W     = 200;
 const GHOST_H     = 90;
 const MAX_COLS       = 6;    // screens per row before a journey wraps
+const JOURNEY_COLS   = 3;    // journey blocks packed side by side
+const MAX_STICKIES   = 8;    // per screen; the rest are summarised in a "+N more" chip
+const MORE_CHIP_H    = 34;
 const ROW_GAP        = 90;
 const GROUP_PAD      = 56;   // breathing room inside a journey boundary
 const GROUP_GAP      = 150;  // vertical space between journeys
@@ -49,6 +52,13 @@ figma.ui.onmessage = async (msg) => {
 
     // Match the HTML artifact's dark-navy canvas background
 
+    // Every run appended to whatever was already on the page, so two or three generates
+    // stacked their output on top of each other — old ghost cards and arrows included.
+    // Nodes are tagged on creation, so a re-run clears only what this plugin made.
+    for (const node of figma.currentPage.children.slice()) {
+      if (node.getPluginData('hldgen') === '1') node.remove();
+    }
+
     const vcToFrame = new Map();   // vcClassName → screen card frame
     const cards     = [];          // { scene, frame, vcName, group }
 
@@ -62,53 +72,70 @@ figma.ui.onmessage = async (msg) => {
       journeys.get(g).push(scene);
     }
 
-    // ── Pass 1: lay out each journey as its own block of rows ────────────────
+    // ── Pass 1: measure every journey, then pack the blocks into columns ─────
+    // Stacking journeys in one vertical ribbon made the board ~43000px tall and impossible
+    // to scan. Measuring first lets each block drop into whichever column is currently
+    // shortest, which keeps the whole HLD roughly square.
+    const measured = [];
+    for (const [name, gs] of journeys) {
+      const rowHeights = [];
+      for (let i = 0; i < gs.length; i += MAX_COLS) {
+        rowHeights.push(Math.max(...gs.slice(i, i + MAX_COLS).map(columnHeight)));
+      }
+      const cols = Math.min(gs.length, MAX_COLS);
+      measured.push({
+        name, scenes: gs, rowHeights,
+        w: cols * CARD_W + (cols - 1) * CARD_GAP,
+        h: rowHeights.reduce((a, b) => a + b, 0) + ROW_GAP * (rowHeights.length - 1),
+      });
+    }
+    // Tallest first, so the big journeys anchor the columns and the small ones fill the gaps.
+    measured.sort((a, b) => b.h - a.h);
+
+    const colCount  = Math.max(1, Math.min(JOURNEY_COLS, measured.length));
+    const colWidth  = MAX_COLS * CARD_W + (MAX_COLS - 1) * CARD_GAP + GROUP_PAD * 2 + GROUP_GAP;
+    const colHeights = new Array(colCount).fill(0);
+
     const journeyBounds = [];   // { name, x, y, w, h }
-    let journeyTop = 0;
 
-    for (const [groupName, groupScenes] of journeys) {
-      const originX = GROUP_PAD;
-      const originY = journeyTop + GROUP_PAD + GROUP_LABEL_H;
+    for (const m of measured) {
+      let c = 0;
+      for (let i = 1; i < colCount; i++) if (colHeights[i] < colHeights[c]) c = i;
+
+      const originX = c * colWidth + GROUP_PAD;
+      const originY = colHeights[c] + GROUP_PAD + GROUP_LABEL_H;
       let rowTop = originY;
-      let rowMaxH = 0;
-      let blockBottom = originY;
 
-      for (let i = 0; i < groupScenes.length; i++) {
-        const scene = groupScenes[i];
+      for (let i = 0; i < m.scenes.length; i++) {
+        const scene = m.scenes[i];
         const col = i % MAX_COLS;
-        if (col === 0 && i > 0) {
-          rowTop += rowMaxH + ROW_GAP;
-          rowMaxH = 0;
-        }
+        if (col === 0 && i > 0) rowTop += m.rowHeights[Math.floor(i / MAX_COLS) - 1] + ROW_GAP;
 
         const frame = await buildScreenCard(scene, originX + col * (CARD_W + CARD_GAP), rowTop);
+        tag(frame);
         figma.currentPage.appendChild(frame);
 
-        const vcName = (scene.viewControllers || [])[0] || `${groupName}${i}`;
+        const vcName = (scene.viewControllers || [])[0] || `${m.name}${i}`;
         vcToFrame.set(vcName, frame);
-        cards.push({ scene, frame, vcName, group: groupName });
-
-        const h = columnHeight(scene);
-        if (h > rowMaxH) rowMaxH = h;
-        blockBottom = Math.max(blockBottom, rowTop + h);
+        cards.push({ scene, frame, vcName, group: m.name });
       }
 
-      const cols = Math.min(groupScenes.length, MAX_COLS);
+      colHeights[c] = originY + m.h + GROUP_PAD + GROUP_GAP;
       journeyBounds.push({
-        name: groupName,
+        name: m.name,
         x: originX,
         y: originY,
-        w: cols * CARD_W + (cols - 1) * CARD_GAP,
-        h: blockBottom - originY,
+        w: m.w,
+        h: m.h,
       });
-      journeyTop = blockBottom + GROUP_GAP;
     }
 
     // ── Pass 2: create sticky notes, track them for connectors ───────────────
     const stickyRecords = [];   // { sticky, chain, sourceFrame, group }
 
     for (const { scene, frame, group } of cards) {
-      const actions = visibleActions(scene);
+      const all = visibleActions(scene);
+      const actions = all.slice(0, MAX_STICKIES);
       const endpoints = scene.apiEndpoints || [];
       const serviceCalls = (scene.actionChains || [])
         .flatMap(a => (a.calls || []).flatMap(c => c.services || []));
@@ -123,15 +150,28 @@ figma.ui.onmessage = async (msg) => {
         const sticky = await buildSticky(chain, isExternal, STICKY_W);
         sticky.x = frame.x + (CARD_W - STICKY_W) / 2;
         sticky.y = stickyY;
+        tag(sticky);
         figma.currentPage.appendChild(sticky);
         stickyRecords.push({ sticky, chain, sourceFrame: frame, group });
         stickyY += STICKY_H + STICKY_GAP;
+      }
+
+      // One screen had 76 chains, and a column that tall buries every neighbouring row.
+      // The rest stay in the JSON; the board just says how many were left off.
+      if (all.length > actions.length) {
+        const more = await buildMoreChip(all.length - actions.length, STICKY_W);
+        more.x = frame.x + (CARD_W - STICKY_W) / 2;
+        more.y = stickyY;
+        tag(more);
+        figma.currentPage.appendChild(more);
+        stickyY += MORE_CHIP_H + STICKY_GAP;
       }
 
       if (endpoints.length > 0 || serviceCalls.length > 0) {
         const cloud = await buildApiCloud(endpoints, serviceCalls, CARD_W);
         cloud.x = frame.x;
         cloud.y = stickyY + 8;
+        tag(cloud);
         figma.currentPage.appendChild(cloud);
       }
     }
@@ -141,6 +181,7 @@ figma.ui.onmessage = async (msg) => {
       // insertChild(0, …) is the bottom of the z-order, so push the label in first
       // and the box after it — otherwise the box's fill covers its own title.
       const [box, label] = await buildJourneyBoundary(b);
+      tag(box); tag(label);
       figma.currentPage.insertChild(0, label);
       figma.currentPage.insertChild(0, box);
     }
@@ -183,7 +224,7 @@ figma.ui.onmessage = async (msg) => {
           appendExternalLabel(sticky, `${shortDest} · ${targetCard.group}`);
         } else {
           const arrow = buildArrow(sticky, targetFrame, C.accent);
-          if (arrow) { figma.currentPage.appendChild(arrow); arrowCount++; }
+          if (arrow) { tag(arrow); figma.currentPage.appendChild(arrow); arrowCount++; }
         }
       }
     }
@@ -472,10 +513,39 @@ function visibleActions(scene) {
 /// Rows inside a journey are spaced by the tallest column, so a 76-sticky screen cannot overlap
 /// the row beneath it.
 function columnHeight(scene) {
-  const n = visibleActions(scene).length;
+  const total = visibleActions(scene).length;
+  const shown = Math.min(total, MAX_STICKIES);
   const hasApi = (scene.apiEndpoints || []).length > 0
     || (scene.actionChains || []).some(a => (a.calls || []).some(c => (c.services || []).length > 0));
-  return CARD_H + 20 + n * (STICKY_H + STICKY_GAP) + (hasApi ? API_CLOUD_H + 16 : 0);
+  return CARD_H + 20
+    + shown * (STICKY_H + STICKY_GAP)
+    + (total > shown ? MORE_CHIP_H + STICKY_GAP : 0)
+    + (hasApi ? API_CLOUD_H + 16 : 0);
+}
+
+/// Marks a node as this plugin's output so the next run can clear it without touching
+/// anything the reader added to the page by hand.
+function tag(node) { node.setPluginData('hldgen', '1'); }
+
+// ── "+N more" chip, standing in for the stickies past the per-screen cap ──────
+async function buildMoreChip(count, w) {
+  const f = figma.createFrame();
+  f.name = `+${count} more actions`;
+  f.resize(w, MORE_CHIP_H);
+  f.fills = solid(C.surface2);
+  f.strokes = solid(C.border);
+  f.strokeWeight = 1;
+  f.dashPattern = [5, 4];
+  f.cornerRadius = 8;
+
+  const t = figma.createText();
+  t.fontName = { family: 'Inter', style: 'Regular' };
+  t.fontSize = 10;
+  t.characters = `+${count} more actions`;
+  t.fills = solid(C.textDim);
+  t.x = 10; t.y = 10;
+  f.appendChild(t);
+  return f;
 }
 
 // ── Journey boundary: dashed box + title, drawn behind its screens ────────────
