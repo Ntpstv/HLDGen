@@ -25,17 +25,19 @@ function solid(c, a = 1) { return [{ type: 'SOLID', color: c, opacity: a }]; }
 function noFill()         { return []; }
 
 // ── Layout constants ──────────────────────────────────────────────────────────
-const CARD_W      = 220;
+// Wide enough that a real endpoint path stays readable without truncation.
+const CARD_W      = 300;
 const CARD_H      = 320;
-const CARD_GAP    = 200;   // wider gap so arrows have room
-const STICKY_W    = 190;
-const STICKY_H    = 90;    // tall card-style stickies
-const STICKY_GAP  = 12;
-const API_CLOUD_H = 70;
+const CARD_GAP    = 140;
+const PANEL_GAP     = 12;
+const PANEL_HEAD_H  = 24;
+const PANEL_PAD     = 10;
+const ROW_H         = 14;
+const API_ROW_H     = 27;   // endpoint line plus its request/response line
+const MAX_NAV_ROWS  = 8;
+const MAX_API_ROWS  = 6;
 const MAX_COLS       = 6;    // screens per row before a journey wraps
 const JOURNEY_COLS   = 3;    // journey blocks packed side by side
-const MAX_STICKIES   = 8;    // per screen; the rest are summarised in a "+N more" chip
-const MORE_CHIP_H    = 34;
 const ROW_GAP        = 90;
 const GROUP_PAD      = 56;   // breathing room inside a journey boundary
 const GROUP_GAP      = 150;  // vertical space between journeys
@@ -94,6 +96,15 @@ figma.ui.onmessage = async (msg) => {
       }
     }
 
+    // Same-journey destinations, named per screen for its "goes to" panel.
+    const nextByScene = new Map();
+    for (const { from, to } of edges.values()) {
+      if (!nextByScene.has(from)) nextByScene.set(from, []);
+      if (!nextByScene.get(from).includes(to.name)) nextByScene.get(from).push(to.name);
+    }
+    const navOf = s => nextByScene.get(s) || [];
+    const extOf = s => [...(externals.get(s) || [])];
+
     // Order each journey so a screen comes after whatever leads into it, which keeps
     // arrows pointing forward and short instead of doubling back across the block.
     for (const [name, gs] of journeys) journeys.set(name, flowOrder(gs, edges));
@@ -106,7 +117,7 @@ figma.ui.onmessage = async (msg) => {
     for (const [name, gs] of journeys) {
       const rowHeights = [];
       for (let i = 0; i < gs.length; i += MAX_COLS) {
-        rowHeights.push(Math.max(...gs.slice(i, i + MAX_COLS).map(columnHeight)));
+        rowHeights.push(Math.max(...gs.slice(i, i + MAX_COLS).map(s => columnHeight(s, navOf(s), extOf(s)))));
       }
       const cols = Math.min(gs.length, MAX_COLS);
       measured.push({
@@ -142,7 +153,7 @@ figma.ui.onmessage = async (msg) => {
         const col = i % MAX_COLS;
         if (col === 0 && i > 0) rowTop += m.rowHeights[Math.floor(i / MAX_COLS) - 1] + ROW_GAP;
 
-        const container = await buildScreenGroup(scene, externals.get(scene));
+        const container = await buildScreenGroup(scene, navOf(scene), extOf(scene));
         container.x = originX + col * (CARD_W + CARD_GAP);
         container.y = rowTop;
         tag(container);
@@ -359,90 +370,6 @@ async function buildWfNode(node, scale) {
   return r;
 }
 
-// ── Build sticky note (large card style, like HTML whiteboard) ────────────────
-async function buildSticky(chain, isExternal, cardW) {
-  const isApi      = (chain.calls || []).some(c => c.services && c.services.length);
-  const isExit     = (chain.resolvedDestinations || []).some(d => d.includes('exits') || d.includes('completes'));
-  const isCallback = /success|complete|finish|done|result|callback/i.test(chain.action);
-
-  // Vivid solid fills matching HTML whiteboard colors
-  const color = isApi      ? C.green
-              : isExit     ? C.red
-              : isExternal ? C.pink
-              : isCallback ? C.amber
-              :              C.accent;
-
-  const dest = [...(chain.resolvedDestinations || []), ...(chain.vcRoutes || [])][0] || '';
-  const svc  = (chain.calls || []).flatMap(c => c.services || [])[0] || '';
-
-  // Detect action kind for the type label
-  const kindLabel = isApi ? 'API' : isExit ? 'EXIT' : /tap|button|press/i.test(chain.action) ? 'TAP' : 'BIND';
-
-  const f = figma.createFrame();
-  f.name = `sticky:${chain.action}`;
-  f.resize(cardW, STICKY_H);
-  f.fills = solid(color, 0.85);   // vivid, mostly-opaque fill
-  f.cornerRadius = 6;
-  f.clipsContent = false;
-
-  // Top kind badge row
-  const badge = figma.createFrame();
-  badge.name = 'kind';
-  badge.resize(cardW, 20);
-  badge.x = 0; badge.y = 0;
-  badge.fills = solid(color);   // fully opaque top stripe
-  badge.cornerRadius = 6;
-  f.appendChild(badge);
-
-  const kindT = figma.createText();
-  kindT.fontName = { family: 'Inter', style: 'Semi Bold' };
-  kindT.fontSize = 8;
-  kindT.letterSpacing = { value: 1.5, unit: 'PIXELS' };
-  kindT.characters = kindLabel;
-  kindT.fills = solid(C.white);
-  kindT.x = 8; kindT.y = 5;
-  badge.appendChild(kindT);
-
-  // Action name
-  const label = figma.createText();
-  label.fontName = { family: 'Inter', style: 'Semi Bold' };
-  label.fontSize = 11;
-  label.characters = `'${truncate(chain.action, 22)}'`;
-  label.fills = solid(C.white);
-  label.x = 8; label.y = 26;
-  f.appendChild(label);
-
-  // Destination / service subtitle
-  if (dest || svc) {
-    const sub = figma.createText();
-    sub.fontName = { family: 'Inter', style: 'Regular' };
-    sub.fontSize = 9;
-    sub.characters = '→ ' + truncate(
-      (dest || svc)
-        .replace('ViewController', 'VC')
-        .replace(' screen', '')
-        .replace('flow completes (returns to caller / exits module)', 'exits module'),
-      32
-    );
-    sub.fills = solid(C.white, 0.85);
-    sub.x = 8; sub.y = 44;
-    f.appendChild(sub);
-  }
-
-  // Small arrow → on the right for nav stickies
-  if (!isApi && !isExit && (dest || isExternal)) {
-    const arr = figma.createText();
-    arr.fontName = { family: 'Inter', style: 'Regular' };
-    arr.fontSize = 14;
-    arr.characters = '→';
-    arr.fills = solid(C.white, 0.6);
-    arr.x = cardW - 20; arr.y = (STICKY_H - 18) / 2;
-    f.appendChild(arr);
-  }
-
-  return f;
-}
-
 // ── Destinations that are never a real screen-to-screen move ─────────────────
 function shouldSkipDest(dest) {
   return !dest
@@ -485,55 +412,113 @@ function flowOrder(sceneList, edges) {
 
 // ── One screen as a single node: card + stickies + API cloud ─────────────────
 // Figma labels every top-level node, so leaving these loose put 537 names on the board.
-async function buildScreenGroup(scene, externalLabels) {
-  const all      = visibleActions(scene);
-  const actions  = all.slice(0, MAX_STICKIES);
-  const endpoints    = scene.apiEndpoints || [];
-  const serviceCalls = (scene.actionChains || [])
-    .flatMap(a => (a.calls || []).flatMap(c => c.services || []));
-
+async function buildScreenGroup(scene, nextNames, externalNames) {
   const group = figma.createFrame();
   group.name = `${scene.group} · ${scene.name}`;
-  group.resize(CARD_W, columnHeight(scene));
+  group.resize(CARD_W, columnHeight(scene, nextNames, externalNames));
   group.fills = noFill();
   group.clipsContent = false;
 
   const card = await buildScreenCard(scene, 0, 0);
   group.appendChild(card);
 
-  let y = CARD_H + 20;
-  const stickyX = (CARD_W - STICKY_W) / 2;
+  let y = CARD_H + PANEL_GAP;
 
-  for (const chain of actions) {
-    const dest = [...(chain.resolvedDestinations || []), ...(chain.vcRoutes || [])][0] || '';
-    const isExternal = dest && !dest.includes('exits') && !dest.includes('completes')
-      && [...(externalLabels || [])].some(l => l.startsWith(dest.replace('ViewController', 'VC').trim()));
+  const nav = await buildNavPanel(nextNames, externalNames);
+  if (nav) { nav.y = y; group.appendChild(nav); y += nav.height + PANEL_GAP; }
 
-    const sticky = await buildSticky(chain, isExternal, STICKY_W);
-    sticky.x = stickyX;
-    sticky.y = y;
-    group.appendChild(sticky);
-    y += STICKY_H + STICKY_GAP;
-  }
-
-  // One screen had 76 chains, and a column that tall buries every neighbouring row.
-  // The rest stay in the JSON; the board just says how many were left off.
-  if (all.length > actions.length) {
-    const more = await buildMoreChip(all.length - actions.length, STICKY_W);
-    more.x = stickyX;
-    more.y = y;
-    group.appendChild(more);
-    y += MORE_CHIP_H + STICKY_GAP;
-  }
-
-  if (endpoints.length > 0 || serviceCalls.length > 0) {
-    const cloud = await buildApiCloud(endpoints, serviceCalls, CARD_W);
-    cloud.x = 0;
-    cloud.y = y + 8;
-    group.appendChild(cloud);
-  }
+  const api = await buildApiPanel(scene.apiEndpoints || []);
+  if (api) { api.y = y; group.appendChild(api); }
 
   return group;
+}
+
+// ── "Goes to" panel ──────────────────────────────────────────────────────────
+// An arrow already shows same-journey moves, but it does not name the ones that leave —
+// another journey, or another module entirely — so those are listed here in text.
+async function buildNavPanel(nextNames, externalNames) {
+  const rows = [
+    ...nextNames.map(n => ({ text: `→ ${n}`, color: C.accent })),
+    ...externalNames.map(n => ({ text: `↗ ${n}`, color: C.amber })),
+  ].slice(0, MAX_NAV_ROWS);
+  if (rows.length === 0) return null;
+
+  const f = figma.createFrame();
+  f.name = 'goes to';
+  f.resize(CARD_W, PANEL_HEAD_H + rows.length * ROW_H + PANEL_PAD);
+  f.fills = solid(C.surface2, 0.7);
+  f.strokes = solid(C.border);
+  f.strokeWeight = 1;
+  f.cornerRadius = 8;
+
+  const head = figma.createText();
+  head.fontName = { family: 'Inter', style: 'Semi Bold' };
+  head.fontSize = 8;
+  head.characters = 'GOES TO';
+  head.letterSpacing = { unit: 'PIXELS', value: 0.6 };
+  head.fills = solid(C.textDim);
+  head.x = 10; head.y = 8;
+  f.appendChild(head);
+
+  rows.forEach((r, i) => {
+    const t = figma.createText();
+    t.fontName = { family: 'Inter', style: 'Regular' };
+    t.fontSize = 9;
+    t.characters = truncate(r.text, 44);
+    t.fills = solid(r.color, 0.95);
+    t.x = 10; t.y = PANEL_HEAD_H + i * ROW_H;
+    f.appendChild(t);
+  });
+
+  return f;
+}
+
+// ── API panel: method, path, and the request/response models ─────────────────
+async function buildApiPanel(endpoints) {
+  if (endpoints.length === 0) return null;
+  const shown = endpoints.slice(0, MAX_API_ROWS);
+
+  const f = figma.createFrame();
+  f.name = 'API';
+  f.resize(CARD_W, PANEL_HEAD_H + shown.length * API_ROW_H + PANEL_PAD);
+  f.fills = solid(C.green, 0.08);
+  f.strokes = solid(C.green, 0.7);
+  f.strokeWeight = 1;
+  f.cornerRadius = 8;
+
+  const head = figma.createText();
+  head.fontName = { family: 'Inter', style: 'Semi Bold' };
+  head.fontSize = 8;
+  head.characters = 'API';
+  head.letterSpacing = { unit: 'PIXELS', value: 0.6 };
+  head.fills = solid(C.green);
+  head.x = 10; head.y = 8;
+  f.appendChild(head);
+
+  shown.forEach((e, i) => {
+    const top = PANEL_HEAD_H + i * API_ROW_H;
+
+    const line = figma.createText();
+    line.fontName = { family: 'Inter', style: 'Semi Bold' };
+    line.fontSize = 9;
+    line.characters = truncate(`${e.method || 'GET'}  ${e.path || ''}`, 46);
+    line.fills = solid(C.green, 0.95);
+    line.x = 10; line.y = top;
+    f.appendChild(line);
+
+    // Request/response model names come from BaseService<API, Request, Response>.
+    if (e.requestType || e.responseType) {
+      const models = figma.createText();
+      models.fontName = { family: 'Inter', style: 'Regular' };
+      models.fontSize = 8;
+      models.characters = truncate(`req ${e.requestType || '—'}   resp ${e.responseType || '—'}`, 52);
+      models.fills = solid(C.textDim);
+      models.x = 10; models.y = top + 13;
+      f.appendChild(models);
+    }
+  });
+
+  return f;
 }
 
 // ── Which action chains earn a sticky ────────────────────────────────────────
@@ -555,41 +540,18 @@ function visibleActions(scene) {
 /// Full vertical extent of one screen's column — card, its stack of stickies, and any API cloud.
 /// Rows inside a journey are spaced by the tallest column, so a 76-sticky screen cannot overlap
 /// the row beneath it.
-function columnHeight(scene) {
-  const total = visibleActions(scene).length;
-  const shown = Math.min(total, MAX_STICKIES);
-  const hasApi = (scene.apiEndpoints || []).length > 0
-    || (scene.actionChains || []).some(a => (a.calls || []).some(c => (c.services || []).length > 0));
-  return CARD_H + 20
-    + shown * (STICKY_H + STICKY_GAP)
-    + (total > shown ? MORE_CHIP_H + STICKY_GAP : 0)
-    + (hasApi ? API_CLOUD_H + 16 : 0);
+function columnHeight(scene, nextNames, externalNames) {
+  const navRows = Math.min((nextNames || []).length + (externalNames || []).length, MAX_NAV_ROWS);
+  const apiRows = Math.min((scene.apiEndpoints || []).length, MAX_API_ROWS);
+  let h = CARD_H;
+  if (navRows > 0) h += PANEL_GAP + PANEL_HEAD_H + navRows * ROW_H + PANEL_PAD;
+  if (apiRows > 0) h += PANEL_GAP + PANEL_HEAD_H + apiRows * API_ROW_H + PANEL_PAD;
+  return h + PANEL_GAP;
 }
 
 /// Marks a node as this plugin's output so the next run can clear it without touching
 /// anything the reader added to the page by hand.
 function tag(node) { node.setPluginData('hldgen', '1'); }
-
-// ── "+N more" chip, standing in for the stickies past the per-screen cap ──────
-async function buildMoreChip(count, w) {
-  const f = figma.createFrame();
-  f.name = `+${count} more actions`;
-  f.resize(w, MORE_CHIP_H);
-  f.fills = solid(C.surface2);
-  f.strokes = solid(C.border);
-  f.strokeWeight = 1;
-  f.dashPattern = [5, 4];
-  f.cornerRadius = 8;
-
-  const t = figma.createText();
-  t.fontName = { family: 'Inter', style: 'Regular' };
-  t.fontSize = 10;
-  t.characters = `+${count} more actions`;
-  t.fills = solid(C.textDim);
-  t.x = 10; t.y = 10;
-  f.appendChild(t);
-  return f;
-}
 
 // ── Journey boundary: dashed box + title, drawn behind its screens ────────────
 async function buildJourneyBoundary(b) {
@@ -613,44 +575,6 @@ async function buildJourneyBoundary(b) {
   label.y = b.y - GROUP_PAD - GROUP_LABEL_H + 6;
 
   return [box, label];
-}
-
-// ── Build API cloud ───────────────────────────────────────────────────────────
-async function buildApiCloud(endpoints, services, cardW) {
-  const lines = [
-    ...endpoints.map(e => `${e.method || 'GET'} ${e.path || ''}`),
-    ...services,
-  ];
-
-  const f = figma.createFrame();
-  f.name = 'API cloud';
-  f.resize(cardW, Math.max(API_CLOUD_H, 20 + lines.length * 14));
-  f.fills = solid(C.green, 0.1);
-  f.strokes = [{ type: 'SOLID', color: C.green }];
-  f.strokeWeight = 1;
-  f.strokeAlign = 'INSIDE';
-  f.cornerRadius = 6;
-  f.dashPattern = [4, 3];
-
-  const header = figma.createText();
-  header.fontName = { family: 'Inter', style: 'Semi Bold' };
-  header.fontSize = 8;
-  header.characters = '☁ API';
-  header.fills = solid(C.green);
-  header.x = 8; header.y = 8;
-  f.appendChild(header);
-
-  for (let i = 0; i < lines.length; i++) {
-    const t = figma.createText();
-    t.fontName = { family: 'Inter', style: 'Regular' };
-    t.fontSize = 8;
-    t.characters = lines[i];
-    t.fills = solid(C.green, 0.8);
-    t.x = 8; t.y = 22 + i * 14;
-    f.appendChild(t);
-  }
-
-  return f;
 }
 
 // ── Build arrow line: fromNode right-edge → toNode left-edge ─────────────────
