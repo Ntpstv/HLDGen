@@ -105,12 +105,24 @@ echo ""
 echo "✓ Done: $OUTPUT"
 echo "  Paste into Figma plugin (Plugins → Development → HLDGen Scene Importer)"
 
-# ── Auto-add output file to .gitignore ───────────────────────────────────────
-OUTPUT_BASENAME="$(basename "$OUTPUT")"
+# ── Keep the host repo clean ─────────────────────────────────────────────────
+# Both the generated bundle and this checkout itself (~50MB once .build exists) are
+# throwaway, so neither should ever end up in the host repo's history.
 GITIGNORE=".gitignore"
-if [ -f "$GITIGNORE" ] && ! grep -qF "$OUTPUT_BASENAME" "$GITIGNORE"; then
-  echo "" >> "$GITIGNORE"
-  echo "# HLDGen output" >> "$GITIGNORE"
-  echo "$OUTPUT_BASENAME" >> "$GITIGNORE"
-  echo "  Added '$OUTPUT_BASENAME' to .gitignore"
+IGNORE_ENTRIES=("$(basename "$OUTPUT")")
+
+# The checkout's path relative to the repo root, when it sits inside this repo at all
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+case "$SCRIPT_DIR/" in
+  # Leading slash anchors the pattern, so a bare `Tools/` cannot also swallow
+  # an unrelated `SomeModule/Tools/` elsewhere in the repo.
+  "$REPO_ROOT"/*) IGNORE_ENTRIES+=("/${SCRIPT_DIR#"$REPO_ROOT"/}/") ;;
+esac
+
+if [ -n "$REPO_ROOT" ] && [ -f "$GITIGNORE" ]; then
+  for entry in "${IGNORE_ENTRIES[@]}"; do
+    grep -qxF "$entry" "$GITIGNORE" && continue
+    printf '\n# HLDGen\n%s\n' "$entry" >> "$GITIGNORE"
+    echo "  Added '$entry' to .gitignore"
+  done
 fi
