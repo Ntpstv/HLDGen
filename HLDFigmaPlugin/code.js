@@ -36,7 +36,11 @@ const ROW_H         = 14;
 const API_ROW_H     = 42;   // endpoint line plus its request and response field lines
 const MAX_NAV_ROWS  = 8;
 const MAX_API_ROWS  = 6;
-const MAX_COLS       = 6;    // screens per row before a journey wraps
+const MAX_COLS       = 6;    // unlinked screens per row, under the flow
+const LAYER_GAP      = 180;  // horizontal room between flow columns — fits a decision diamond
+const STACK_GAP      = 60;   // vertical gap between screens in one flow column
+const SECTION_GAP    = 120;  // between the flow and the unlinked-screen grid below it
+const DECISION       = 44;
 const JOURNEY_COLS   = 3;    // journey blocks packed side by side
 const ROW_GAP        = 90;
 const GROUP_PAD      = 56;   // breathing room inside a journey boundary
@@ -97,101 +101,107 @@ figma.ui.onmessage = async (msg) => {
     }
 
     // Same-journey destinations, named per screen for its "goes to" panel.
-    const nextByScene = new Map();
-    for (const { from, to } of edges.values()) {
-      if (!nextByScene.has(from)) nextByScene.set(from, []);
-      if (!nextByScene.get(from).includes(to.name)) nextByScene.get(from).push(to.name);
-    }
-    const navOf = s => nextByScene.get(s) || [];
     const extOf = s => [...(externals.get(s) || [])];
 
-    // Order each journey so a screen comes after whatever leads into it, which keeps
-    // arrows pointing forward and short instead of doubling back across the block.
-    for (const [name, gs] of journeys) journeys.set(name, flowOrder(gs, edges));
-
-    // ── Pass 2: measure every journey, then pack the blocks into columns ─────
-    // Stacking journeys in one vertical ribbon made the board ~43000px tall and impossible
-    // to scan. Measuring first lets each block drop into whichever column is currently
-    // shortest, which keeps the whole HLD roughly square.
-    const measured = [];
+    // ── Pass 2: lay out each journey as a left-to-right flow ────────────────
+    // A grid put related screens anywhere and the arrows had to cross the block to reach
+    // them. Layering by flow depth puts each screen one column after whatever leads into
+    // it, so every line is a short hop between neighbouring columns.
+    const layouts = [];
     for (const [name, gs] of journeys) {
-      const rowHeights = [];
-      for (let i = 0; i < gs.length; i += MAX_COLS) {
-        rowHeights.push(Math.max(...gs.slice(i, i + MAX_COLS).map(s => columnHeight(s, navOf(s), extOf(s)))));
-      }
-      const cols = Math.min(gs.length, MAX_COLS);
-      measured.push({
-        name, scenes: gs, rowHeights,
-        w: cols * CARD_W + (cols - 1) * CARD_GAP,
-        h: rowHeights.reduce((a, b) => a + b, 0) + ROW_GAP * (rowHeights.length - 1),
-      });
+      const layout = layoutJourney(gs, edges, s => columnHeight(s, [], extOf(s)));
+      layouts.push({ name, ...layout });
     }
-    // Tallest first, so the big journeys anchor the columns and the small ones fill the gaps.
-    measured.sort((a, b) => b.h - a.h);
+    // Loop-backs are not drawn (they would run right-to-left across the flow), so they are
+    // named in the screen's panel instead.
+    const backOf = s => {
+      for (const l of layouts) if (l.back.has(s)) return l.back.get(s).map(t => `${t.name} (back)`);
+      return [];
+    };
+    for (const l of layouts) {
+      l.h = 0;
+      for (const [sc, p] of l.pos) {
+        p.h = columnHeight(sc, backOf(sc), extOf(sc));
+      }
+      restack(l);
+    }
 
-    const colCount   = Math.max(1, Math.min(JOURNEY_COLS, measured.length));
-    const colWidth   = MAX_COLS * CARD_W + (MAX_COLS - 1) * CARD_GAP + GROUP_PAD * 2 + GROUP_GAP;
+    // Tallest first, so the big journeys anchor the columns and the small ones fill the gaps.
+    layouts.sort((x, y) => y.h - x.h);
+
+    const colCount   = Math.max(1, Math.min(JOURNEY_COLS, layouts.length));
+    const colWidth   = Math.max(...layouts.map(l => l.w)) + GROUP_PAD * 2 + GROUP_GAP;
     const colHeights = new Array(colCount).fill(0);
 
-    const journeyBounds = [];        // { name, x, y, w, h }
-    const sceneToGroup  = new Map(); // scene → its container frame
+    const journeyBounds = [];
+    const sceneToGroup  = new Map();
+    let arrowCount = 0, decisionCount = 0;
 
-    // ── Pass 3: build one container per screen ──────────────────────────────
-    // Card, stickies and API cloud used to sit on the page as 537 separate top-level
-    // frames, and Figma draws every one of their names above them — that grey
-    // "sticky:…" haze over the whole board. Nesting them leaves ~115 named nodes.
-    for (const m of measured) {
+    for (const l of layouts) {
       let c = 0;
       for (let i = 1; i < colCount; i++) if (colHeights[i] < colHeights[c]) c = i;
+      const ox = c * colWidth + GROUP_PAD;
+      const oy = colHeights[c] + GROUP_PAD + GROUP_LABEL_H;
 
-      const originX = c * colWidth + GROUP_PAD;
-      const originY = colHeights[c] + GROUP_PAD + GROUP_LABEL_H;
-      let rowTop = originY;
-
-      for (let i = 0; i < m.scenes.length; i++) {
-        const scene = m.scenes[i];
-        const col = i % MAX_COLS;
-        if (col === 0 && i > 0) rowTop += m.rowHeights[Math.floor(i / MAX_COLS) - 1] + ROW_GAP;
-
-        const container = await buildScreenGroup(scene, navOf(scene), extOf(scene));
-        container.x = originX + col * (CARD_W + CARD_GAP);
-        container.y = rowTop;
+      // ── screens
+      for (const [scene, p] of l.pos) {
+        const container = await buildScreenGroup(scene, backOf(scene), extOf(scene));
+        container.x = ox + p.x;
+        container.y = oy + p.y;
         tag(container);
         figma.currentPage.appendChild(container);
         sceneToGroup.set(scene, container);
       }
 
-      colHeights[c] = originY + m.h + GROUP_PAD + GROUP_GAP;
-      journeyBounds.push({ name: m.name, x: originX, y: originY, w: m.w, h: m.h });
+      // ── connectors: straight hop for one next screen, a decision diamond for several
+      const anchorOut = sc => { const p = l.pos.get(sc); return { x: ox + p.x + CARD_W, y: oy + p.y + CARD_H / 2 }; };
+      const anchorIn  = sc => { const p = l.pos.get(sc); return { x: ox + p.x,          y: oy + p.y + CARD_H / 2 }; };
+
+      for (const [from, targets] of l.fwd) {
+        if (targets.length === 0) continue;
+        const start = anchorOut(from);
+
+        if (targets.length === 1) {
+          const end = anchorIn(targets[0]);
+          const line = buildElbow(start, end, end.x - LAYER_GAP / 2, C.accent);
+          line.name = `${from.name} → ${targets[0].name}`;
+          tag(line); figma.currentPage.appendChild(line); arrowCount++;
+          continue;
+        }
+
+        const cx = start.x + LAYER_GAP / 2, cy = start.y;
+        const diamond = await buildDecision(cx, cy, targets.length);
+        diamond.name = `decision: ${from.name}`;
+        tag(diamond); figma.currentPage.appendChild(diamond); decisionCount++;
+
+        const into = buildElbow(start, { x: cx - DECISION / 2, y: cy }, start.x, C.accent);
+        tag(into); figma.currentPage.appendChild(into); arrowCount++;
+
+        for (const t of targets) {
+          const end = anchorIn(t);
+          const out = buildElbow({ x: cx + DECISION / 2, y: cy }, end,
+                                 cx + DECISION / 2 + (end.x - cx - DECISION / 2) / 2, C.accent);
+          out.name = `${from.name} → ${t.name}`;
+          tag(out); figma.currentPage.appendChild(out); arrowCount++;
+        }
+      }
+
+      colHeights[c] = oy + l.h + GROUP_PAD + GROUP_GAP;
+      journeyBounds.push({ name: l.name, x: ox, y: oy, w: l.w, h: l.h });
     }
 
-    // ── Pass 4: labelled boundary behind each journey ────────────────────────
-    for (const b of journeyBounds) {
+    // ── labelled boundary behind each journey ───────────────────────────────
+    for (const bnd of journeyBounds) {
       // insertChild(0, …) is the bottom of the z-order, so push the label in first
       // and the box after it — otherwise the box's fill covers its own title.
-      const [box, label] = await buildJourneyBoundary(b);
+      const [box, label] = await buildJourneyBoundary(bnd);
       tag(box); tag(label);
       figma.currentPage.insertChild(0, label);
       figma.currentPage.insertChild(0, box);
     }
 
-    // ── Pass 5: one arrow per screen-to-screen relationship ─────────────────
-    let arrowCount = 0;
-    for (const { from, to, count } of edges.values()) {
-      if (from.group !== to.group) continue;
-      const a = sceneToGroup.get(from), b = sceneToGroup.get(to);
-      if (!a || !b) continue;
-      const arrow = buildArrow(a, b, C.accent);
-      if (!arrow) continue;
-      arrow.name = count > 1 ? `${from.name} → ${to.name} (${count} actions)`
-                             : `${from.name} → ${to.name}`;
-      tag(arrow);
-      figma.currentPage.appendChild(arrow);
-      arrowCount++;
-    }
-
     figma.viewport.scrollAndZoomIntoView([...sceneToGroup.values()]);
-    figma.ui.postMessage({ type: 'done', detail: `${scenes.length} screens · ${journeys.size} journeys · ${arrowCount} arrows` });
+    figma.ui.postMessage({ type: 'done', detail: `${scenes.length} screens · ${journeys.size} journeys · ${decisionCount} decisions · ${arrowCount} lines` });
   } catch (e) {
     figma.ui.postMessage({ type: 'error', detail: String(e) });
   }
@@ -383,31 +393,151 @@ function shouldSkipDest(dest) {
     || /^(back|self|nav)$/i.test(dest.trim());
 }
 
-/// Orders a journey's screens so every screen follows the ones that navigate into it
-/// (Kahn's algorithm). Arrows then run forward instead of doubling back across the block.
-/// Real navigation graphs contain cycles — a confirm screen returning to its input — so
-/// whatever a cycle leaves unplaced is appended in its original order rather than dropped.
-function flowOrder(sceneList, edges) {
-  const inDegree = new Map(sceneList.map(s => [s, 0]));
+/// Places one journey's screens in columns by flow depth.
+///
+/// Navigation graphs have cycles (a confirm screen returning to its input), so back-edges are
+/// found by DFS and set aside first — the rest is acyclic and each screen's column is the longest
+/// path leading into it. Screens with no same-journey links go in a grid under the flow, where
+/// they no longer push connected screens apart. `heightOf` gives a screen's full column height.
+function layoutJourney(sceneList, edges, heightOf) {
+  const inJourney = new Set(sceneList);
   const out = new Map(sceneList.map(s => [s, []]));
   for (const { from, to } of edges.values()) {
-    if (!inDegree.has(from) || !inDegree.has(to)) continue;   // different journey
-    out.get(from).push(to);
-    inDegree.set(to, inDegree.get(to) + 1);
-  }
-
-  const queue = sceneList.filter(s => inDegree.get(s) === 0);
-  const ordered = [];
-  while (queue.length) {
-    const s = queue.shift();
-    ordered.push(s);
-    for (const next of out.get(s)) {
-      inDegree.set(next, inDegree.get(next) - 1);
-      if (inDegree.get(next) === 0) queue.push(next);
+    if (from !== to && inJourney.has(from) && inJourney.has(to) && !out.get(from).includes(to)) {
+      out.get(from).push(to);
     }
   }
-  for (const s of sceneList) if (!ordered.includes(s)) ordered.push(s);
-  return ordered;
+
+  const fwd  = new Map(sceneList.map(s => [s, []]));
+  const back = new Map();
+  const state = new Map();                         // 1 = on the DFS stack, 2 = finished
+  const indeg = new Map(sceneList.map(s => [s, 0]));
+  for (const ts of out.values()) for (const t of ts) indeg.set(t, indeg.get(t) + 1);
+  const visit = s => {
+    state.set(s, 1);
+    for (const t of out.get(s)) {
+      if (state.get(t) === 1) {                    // closes a loop
+        if (!back.has(s)) back.set(s, []);
+        back.get(s).push(t);
+        continue;
+      }
+      fwd.get(s).push(t);
+      if (!state.get(t)) visit(t);
+    }
+    state.set(s, 2);
+  };
+  // Entry screens first, so a loop is broken at its return edge rather than at its entry.
+  for (const s of [...sceneList].sort((a, b) => indeg.get(a) - indeg.get(b))) {
+    if (!state.get(s)) visit(s);
+  }
+
+  const layer = new Map(sceneList.map(s => [s, 0]));
+  const fin = new Map(sceneList.map(s => [s, 0]));
+  for (const ts of fwd.values()) for (const t of ts) fin.set(t, fin.get(t) + 1);
+  const queue = sceneList.filter(s => fin.get(s) === 0);
+  while (queue.length) {
+    const s = queue.shift();
+    for (const t of fwd.get(s)) {
+      layer.set(t, Math.max(layer.get(t), layer.get(s) + 1));
+      fin.set(t, fin.get(t) - 1);
+      if (fin.get(t) === 0) queue.push(t);
+    }
+  }
+
+  const linked = new Set();
+  for (const [s, ts] of fwd) if (ts.length) { linked.add(s); ts.forEach(t => linked.add(t)); }
+
+  const columns = [];
+  for (const s of sceneList) {
+    if (!linked.has(s)) continue;
+    const L = layer.get(s);
+    (columns[L] = columns[L] || []).push(s);
+  }
+  // Order each column by where its parents sit, which untangles most crossings.
+  const rank = new Map();
+  columns.forEach((col, L) => {
+    if (L > 0) {
+      const parentRank = s => {
+        const ps = sceneList.filter(p => fwd.get(p).includes(s) && rank.has(p)).map(p => rank.get(p));
+        return ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : 1e9;
+      };
+      col.sort((a, b) => parentRank(a) - parentRank(b));
+    }
+    col.forEach((s, i) => rank.set(s, i));
+  });
+
+  const pos = new Map();
+  columns.forEach((col, L) => col.forEach(s => pos.set(s, { x: L * (CARD_W + LAYER_GAP), y: 0, h: heightOf(s), col: L })));
+  const loose = sceneList.filter(s => !linked.has(s));
+  loose.forEach((s, i) => pos.set(s, { x: (i % MAX_COLS) * (CARD_W + CARD_GAP), y: 0, h: heightOf(s), grid: i }));
+
+  const layout = { pos, fwd, back, columns, loose, w: 0, h: 0 };
+  restack(layout);
+  return layout;
+}
+
+/// Recomputes y positions and block size from each screen's current height.
+function restack(layout) {
+  let flowBottom = 0;
+  for (const col of layout.columns) {
+    if (!col) continue;
+    let y = 0;
+    for (const s of col) { const p = layout.pos.get(s); p.y = y; y += p.h + STACK_GAP; }
+    flowBottom = Math.max(flowBottom, y - STACK_GAP);
+  }
+  let y = layout.columns.length ? flowBottom + SECTION_GAP : 0, rowH = 0;
+  layout.loose.forEach((s, i) => {
+    const p = layout.pos.get(s);
+    if (i > 0 && i % MAX_COLS === 0) { y += rowH + ROW_GAP; rowH = 0; }
+    p.y = y; rowH = Math.max(rowH, p.h);
+  });
+  const bottom = layout.loose.length ? y + rowH : flowBottom;
+  let w = 0;
+  for (const p of layout.pos.values()) w = Math.max(w, p.x + CARD_W);
+  layout.w = w;
+  layout.h = Math.max(bottom, CARD_H);
+}
+
+/// Right-angled connector: out horizontally, down or up at `bendX`, in horizontally.
+function buildElbow(a, b, bendX, color) {
+  const pts = [a, { x: bendX, y: a.y }, { x: bendX, y: b.y }, b];
+  const minX = Math.min(...pts.map(p => p.x)), minY = Math.min(...pts.map(p => p.y));
+  const v = figma.createVector();
+  v.x = minX; v.y = minY;
+  v.fills = [];
+  v.strokes = solid(color);
+  v.strokeWeight = 2;
+  v.vectorNetwork = {
+    vertices: pts.map((p, i) => ({
+      x: p.x - minX, y: p.y - minY,
+      strokeCap: i === pts.length - 1 ? 'ARROW_LINES' : 'NONE',
+      strokeJoin: 'ROUND', cornerRadius: 0, handleMirroring: 'NONE',
+    })),
+    segments: [{ start: 0, end: 1 }, { start: 1, end: 2 }, { start: 2, end: 3 }],
+    regions: [],
+  };
+  return v;
+}
+
+/// Diamond marking a screen that can lead to more than one place.
+async function buildDecision(cx, cy, branches) {
+  const d = figma.createVector();
+  d.x = cx - DECISION / 2; d.y = cy - DECISION / 2;
+  d.vectorPaths = [{ windingRule: 'NONZERO',
+    data: `M ${DECISION / 2} 0 L ${DECISION} ${DECISION / 2} L ${DECISION / 2} ${DECISION} L 0 ${DECISION / 2} Z` }];
+  d.fills = solid(C.amber, 0.18);
+  d.strokes = solid(C.amber);
+  d.strokeWeight = 2;
+
+  const t = figma.createText();
+  t.fontName = { family: 'Inter', style: 'Semi Bold' };
+  t.fontSize = 10;
+  t.characters = `${branches}`;
+  t.fills = solid(C.amber);
+  t.x = cx - 4; t.y = cy - 7;
+
+  const g = figma.group([d, t], figma.currentPage);
+  return g;
 }
 
 // ── One screen as a single node: card + stickies + API cloud ─────────────────
@@ -582,55 +712,6 @@ async function buildJourneyBoundary(b) {
   label.y = b.y - GROUP_PAD - GROUP_LABEL_H + 6;
 
   return [box, label];
-}
-
-// ── Build arrow line: fromNode right-edge → toNode left-edge ─────────────────
-// Uses VectorNode with bezier curve.
-//
-// IMPORTANT: Figma normalises vectorNetwork so all vertex coords are ≥ 0.
-// We must therefore express vertices in the bounding-box coordinate space
-// (origin = top-left of the bounding box) and place the node at the bounding
-// box top-left on the canvas. Mixing canvas and local coords causes arrows to
-// appear at the wrong position or be invisible.
-function buildArrow(fromNode, toNode, color) {
-  const x1 = fromNode.x + fromNode.width;          // canvas: right edge of source
-  const y1 = fromNode.y + fromNode.height / 2;     // canvas: centre of source
-  const x2 = toNode.x;                              // canvas: left edge of dest
-  const y2 = toNode.y + toNode.height / 2;          // canvas: centre of dest
-
-  if (Math.abs(x2 - x1) + Math.abs(y2 - y1) < 2) return null;
-
-  // Bounding box of the two endpoints on the canvas
-  const bx = Math.min(x1, x2);
-  const by = Math.min(y1, y2);
-
-  // Local coordinates (all non-negative, relative to bounding box top-left)
-  const lx1 = x1 - bx;
-  const ly1 = y1 - by;
-  const lx2 = x2 - bx;
-  const ly2 = y2 - by;
-
-  // Bezier tangents: depart/arrive horizontally for a smooth S-curve
-  const tLen = Math.max(40, Math.abs(lx2 - lx1) * 0.4);
-  const sign  = lx2 >= lx1 ? 1 : -1;
-  const tStart = { x: sign * tLen, y: 0 };
-  const tEnd   = { x: -sign * tLen, y: 0 };
-
-  const vec = figma.createVector();
-  vec.x = bx;
-  vec.y = by;
-  vec.fills = [];
-  vec.strokes = [{ type: 'SOLID', color: color || C.accent }];
-  vec.strokeWeight = 2;
-  vec.vectorNetwork = {
-    vertices: [
-      { x: lx1, y: ly1, strokeCap: 'NONE',       strokeJoin: 'MITER', cornerRadius: 0, handleMirroring: 'NONE' },
-      { x: lx2, y: ly2, strokeCap: 'ARROW_LINES', strokeJoin: 'MITER', cornerRadius: 0, handleMirroring: 'NONE' },
-    ],
-    segments: [{ start: 0, end: 1, tangentStart: tStart, tangentEnd: tEnd }],
-    regions: [],
-  };
-  return vec;
 }
 
 // ── Destination → frame resolution ───────────────────────────────────────────
