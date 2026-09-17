@@ -98,6 +98,11 @@ func journeyGroup(for sceneDir: URL, module: String) -> String {
     return parent.isEmpty ? module : parent
 }
 
+// Titles arrive as localisation keys; the reader needs the words on screen.
+let localizationRoot = scanRoots.first
+    ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+let localizations = loadLocalizations(under: localizationRoot, module: moduleName)
+
 var scenes: [SceneResult] = []
 for sceneDirPath in sceneDirArgs {
     let sceneDirURL = URL(fileURLWithPath: sceneDirPath)
@@ -109,6 +114,13 @@ for sceneDirPath in sceneDirArgs {
     var result = analyzeScene(module: moduleName, sceneName: sceneName, sceneDir: sceneDirURL,
                               serviceEndpoints: serviceEndpoints, flowBindings: flowBindings)
     result.group = journeyGroup(for: sceneDirURL, module: moduleName)
+
+    let facts = extractScreenFacts(sceneDir: sceneDirURL)
+    result.navigationTitleKey = facts.titleKey
+    result.navigationTitle = localizations[facts.titleKey] ?? facts.titleKey
+    result.navigationBarHidden = facts.navBarHidden && facts.titleKey.isEmpty
+    result.notifications = facts.notifications
+    result.localStorage = facts.localStorage
     scenes.append(result)
 }
 

@@ -36,6 +36,8 @@ const ROW_H         = 14;
 const API_ROW_H     = 42;   // endpoint line plus its request and response field lines
 const MAX_NAV_ROWS  = 8;
 const MAX_API_ROWS  = 6;
+const MAX_LIST_ROWS = 6;
+const HEADER_H      = 44;   // navigation title + view controller class, above the wireframe
 const MAX_COLS       = 6;    // unlinked screens per row, under the flow
 const LAYER_GAP      = 180;  // horizontal room between flow columns — fits a decision diamond
 const STACK_GAP      = 60;   // vertical gap between screens in one flow column
@@ -154,8 +156,8 @@ figma.ui.onmessage = async (msg) => {
       }
 
       // ── connectors: straight hop for one next screen, a decision diamond for several
-      const anchorOut = sc => { const p = l.pos.get(sc); return { x: ox + p.x + CARD_W, y: oy + p.y + CARD_H / 2 }; };
-      const anchorIn  = sc => { const p = l.pos.get(sc); return { x: ox + p.x,          y: oy + p.y + CARD_H / 2 }; };
+      const anchorOut = sc => { const p = l.pos.get(sc); return { x: ox + p.x + CARD_W, y: oy + p.y + HEADER_H + CARD_H / 2 }; };
+      const anchorIn  = sc => { const p = l.pos.get(sc); return { x: ox + p.x,          y: oy + p.y + HEADER_H + CARD_H / 2 }; };
 
       for (const [from, targets] of l.fwd) {
         if (targets.length === 0) continue;
@@ -549,18 +551,100 @@ async function buildScreenGroup(scene, nextNames, externalNames) {
   group.fills = noFill();
   group.clipsContent = false;
 
-  const card = await buildScreenCard(scene, 0, 0);
+  group.appendChild(await buildScreenHeader(scene));
+
+  const card = await buildScreenCard(scene, 0, HEADER_H);
   group.appendChild(card);
 
-  let y = CARD_H + PANEL_GAP;
+  let y = HEADER_H + CARD_H + PANEL_GAP;
+  const place = panel => {
+    if (!panel) return;
+    panel.y = y;
+    group.appendChild(panel);
+    y += panel.height + PANEL_GAP;
+  };
 
-  const nav = await buildNavPanel(nextNames, externalNames);
-  if (nav) { nav.y = y; group.appendChild(nav); y += nav.height + PANEL_GAP; }
-
-  const api = await buildApiPanel(scene.apiEndpoints || []);
-  if (api) { api.y = y; group.appendChild(api); }
+  place(await buildNavPanel(nextNames, externalNames));
+  place(await buildApiPanel(scene.apiEndpoints || []));
+  place(await buildListPanel('NOTIFICATION CENTER',
+    (scene.notifications || []).map(n => ({ text: n, color: C.pink })), C.pink));
+  place(await buildListPanel('LOCAL STORAGE',
+    (scene.localStorage || []).map(n => ({ text: n, color: C.text })), C.textDim));
 
   return group;
+}
+
+// ── Header: the title a user sees, then the class a developer searches for ────
+async function buildScreenHeader(scene) {
+  const f = figma.createFrame();
+  f.name = 'header';
+  f.resize(CARD_W, HEADER_H);
+  f.fills = noFill();
+
+  const title = figma.createText();
+  title.fontName = { family: 'Inter', style: 'Semi Bold' };
+  title.fontSize = 14;
+  const hasTitle = !!scene.navigationTitle;
+  title.characters = truncate(
+    hasTitle ? scene.navigationTitle
+             : scene.navigationBarHidden ? 'No navigation bar' : 'No navigation title found', 34);
+  title.fills = hasTitle ? solid(C.textHead) : solid(C.textDim);
+  title.x = 2; title.y = 2;
+  f.appendChild(title);
+
+  const vc = figma.createText();
+  vc.fontName = { family: 'Inter', style: 'Regular' };
+  vc.fontSize = 10;
+  vc.characters = truncate((scene.viewControllers || [])[0] || scene.name, 44);
+  vc.fills = solid(C.accent);
+  vc.x = 2; vc.y = 24;
+  f.appendChild(vc);
+
+  return f;
+}
+
+// ── Generic titled list, used for notifications and storage ─────────────────
+async function buildListPanel(label, items, accent) {
+  const rows = items.slice(0, MAX_LIST_ROWS);
+  if (rows.length === 0) return null;
+  const extra = items.length - rows.length;
+
+  const f = figma.createFrame();
+  f.name = label.toLowerCase();
+  f.resize(CARD_W, PANEL_HEAD_H + (rows.length + (extra > 0 ? 1 : 0)) * ROW_H + PANEL_PAD);
+  f.fills = solid(accent, 0.07);
+  f.strokes = solid(accent, 0.6);
+  f.strokeWeight = 1;
+  f.cornerRadius = 8;
+
+  const head = figma.createText();
+  head.fontName = { family: 'Inter', style: 'Semi Bold' };
+  head.fontSize = 8;
+  head.characters = label;
+  head.letterSpacing = { unit: 'PIXELS', value: 0.6 };
+  head.fills = solid(accent);
+  head.x = 10; head.y = 8;
+  f.appendChild(head);
+
+  rows.forEach((r, i) => {
+    const t = figma.createText();
+    t.fontName = { family: 'Inter', style: 'Regular' };
+    t.fontSize = 9;
+    t.characters = truncate(r.text, 48);
+    t.fills = solid(r.color, 0.95);
+    t.x = 10; t.y = PANEL_HEAD_H + i * ROW_H;
+    f.appendChild(t);
+  });
+  if (extra > 0) {
+    const t = figma.createText();
+    t.fontName = { family: 'Inter', style: 'Regular' };
+    t.fontSize = 9;
+    t.characters = `+${extra} more`;
+    t.fills = solid(C.textDim);
+    t.x = 10; t.y = PANEL_HEAD_H + rows.length * ROW_H;
+    f.appendChild(t);
+  }
+  return f;
 }
 
 // ── "Goes to" panel ──────────────────────────────────────────────────────────
@@ -678,11 +762,18 @@ function visibleActions(scene) {
 /// Rows inside a journey are spaced by the tallest column, so a 76-sticky screen cannot overlap
 /// the row beneath it.
 function columnHeight(scene, nextNames, externalNames) {
+  const listH = n => {
+    if (n === 0) return 0;
+    const rows = Math.min(n, MAX_LIST_ROWS) + (n > MAX_LIST_ROWS ? 1 : 0);
+    return PANEL_GAP + PANEL_HEAD_H + rows * ROW_H + PANEL_PAD;
+  };
   const navRows = Math.min((nextNames || []).length + (externalNames || []).length, MAX_NAV_ROWS);
   const apiRows = Math.min((scene.apiEndpoints || []).length, MAX_API_ROWS);
-  let h = CARD_H;
+  let h = HEADER_H + CARD_H;
   if (navRows > 0) h += PANEL_GAP + PANEL_HEAD_H + navRows * ROW_H + PANEL_PAD;
   if (apiRows > 0) h += PANEL_GAP + PANEL_HEAD_H + apiRows * API_ROW_H + PANEL_PAD;
+  h += listH((scene.notifications || []).length);
+  h += listH((scene.localStorage || []).length);
   return h + PANEL_GAP;
 }
 

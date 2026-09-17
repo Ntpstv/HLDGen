@@ -96,6 +96,15 @@ struct SceneResult: Codable {
     /// `Scenes/AddMoney/ViaCasa/…`. Renderers group by this so a 99-screen module reads as ~19
     /// journeys instead of one endless row. Assigned by main.swift, which knows the source path.
     var group: String = ""
+    /// Navigation bar title as the user sees it, and the localisation key it came from.
+    var navigationTitle: String = ""
+    var navigationTitleKey: String = ""
+    /// The screen hides the navigation bar, so an empty title is expected rather than missed.
+    var navigationBarHidden: Bool = false
+    /// `post · name` / `observe · name` entries for NotificationCenter traffic.
+    var notifications: [String] = []
+    /// Storage calls, e.g. `UserDefaultService.setSOFType`, `UserDefaults.set "key"`.
+    var localStorage: [String] = []
     var viewControllers: [String]
     var interactors: [String]
     var presenters: [String]
