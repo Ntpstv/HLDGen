@@ -89,8 +89,8 @@ echo "Generating → $OUTPUT"
 swift run --package-path "$PKG" hldgen \
   "${SCENE_DIRS[@]}" \
   --module "$MODULE_NAME" \
-  "${API_FLAGS[@]}" \
-  "${FLOW_FLAGS[@]}" \
+  ${API_FLAGS[@]+"${API_FLAGS[@]}"} \
+  ${FLOW_FLAGS[@]+"${FLOW_FLAGS[@]}"} \
   -o "$OUTPUT"
 
 echo ""
