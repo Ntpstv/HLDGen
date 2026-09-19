@@ -40,8 +40,8 @@ const MAX_LIST_ROWS = 6;
 const HEADER_H      = 44;   // navigation title + view controller class, above the wireframe
 const MAX_COLS       = 6;    // unlinked screens per row, under the flow
 const LAYER_GAP      = 320;  // room between flow columns for a decision diamond and action labels
-const BRANCH_STUB    = 14;
-const FANIN_SPACING  = 34;   // vertical gap between connectors entering the same screen   // short run out of a diamond before a branch turns toward its screen
+const BRANCH_STUB    = 14;   // short run out of a diamond before a branch turns toward its screen
+const FANIN_SPACING  = 34;   // vertical gap between connectors entering the same screen
 const STACK_GAP      = 60;   // vertical gap between screens in one flow column
 const SECTION_GAP    = 120;  // between the flow and the unlinked-screen grid below it
 const DECISION       = 44;
@@ -79,9 +79,7 @@ figma.ui.onmessage = async (msg) => {
 
     // ── Pass 1: resolve the navigation graph before anything is drawn ────────
     // Screens are placed in flow order, so which screen leads to which has to be known first.
-    const vcToScene = new Map();
-    for (const s of scenes) for (const v of (s.viewControllers || [])) vcToScene.set(v, s);
-
+    const resolveDest = makeDestinationResolver(scenes);
     const edges = new Map();        // "srcName->dstName" → { from, to, count }
     const externals = new Map();    // scene → Set(label)   destinations outside this journey
     for (const s of scenes) {
@@ -89,7 +87,7 @@ figma.ui.onmessage = async (msg) => {
         for (const dest of [...(chain.resolvedDestinations || []), ...(chain.vcRoutes || [])]) {
           if (shouldSkipDest(dest)) continue;
           const short = dest.replace('ViewController', 'VC').replace(' screen', '').trim();
-          const t = findFrameForDest(dest, vcToScene);   // map values are scenes here
+          const t = resolveDest(dest, s);
 
           if (!externals.has(s)) externals.set(s, new Set());
           if (!t)                   { externals.get(s).add(short); continue; }
@@ -853,26 +851,54 @@ async function buildJourneyBoundary(b) {
   return [box, label];
 }
 
-// ── Destination → frame resolution ───────────────────────────────────────────
-// dest examples: "HistoryRevokeViewController screen", "ScanQR", "next queued screen"
-function findFrameForDest(dest, vcToFrame) {
-  if (!dest || dest.includes('next queued') || dest.includes('exits') || dest.includes('completes')) return null;
-  const destLow = dest.toLowerCase().replace(/\s+screen$/, '');
-  for (const [vcName, frame] of vcToFrame) {
-    // exact VC class name in dest string
-    if (dest.includes(vcName)) return frame;
-    // short name: strip ViewController + module prefix
-    const short = vcName.replace('ViewController', '').toLowerCase();
-    if (short.length > 2 && destLow.includes(short)) return frame;
-    // reverse substring (e.g. destToken="scanqr" ⊂ short="qrscanner" fails,
-    // but word-parts of dest each checked: "scan" ⊂ "qrscanner" ✓)
-    const destClean = destLow.replace(/[^a-z]/g, '');
-    if (destClean.length > 2 && short.includes(destClean)) return frame;
-    // split dest into camelCase / word parts and check each against short name
-    const parts = dest.replace(/([A-Z])/g, ' $1').toLowerCase().split(/\s+/).filter(p => p.length > 2);
-    if (parts.some(p => short.includes(p))) return frame;
-  }
-  return null;
+// ── Destination → screen ─────────────────────────────────────────────────────
+/// Maps a destination string ("FeeDetail", "PTPPlayCardMainViewController screen", …) to the
+/// screen it names. Destinations are usually flow-case names, not class names, so matching has to
+/// be approximate — but the old matcher accepted any shared word, sending PlayCard's "FeeDetail"
+/// to AddMoney's BankAddMoneyDetails and marking it a cross-journey hop, which is never drawn.
+///
+/// Candidates are scored instead: exact name > suffix > containment, only when the two names are
+/// of comparable length, with a bonus for the source's own journey. Below the bar the destination
+/// stays unresolved and shows as text — a missing line beats a line to the wrong screen.
+function makeDestinationResolver(scenes) {
+  const norm = x => x.toLowerCase().replace(/viewcontroller|screen/g, '').replace(/[^a-z0-9]/g, '');
+  const PREFIX = /^(ptpplaycard|ptpplus|ptp|playcard|paotangpay)/;
+  const keys = new Map(scenes.map(s => {
+    const k = new Set([norm(s.name)]);
+    for (const v of s.viewControllers || []) { const n = norm(v); k.add(n); k.add(n.replace(PREFIX, '')); }
+    return [s, [...k].filter(Boolean)];
+  }));
+  const byClass = [];
+  for (const s of scenes) for (const v of s.viewControllers || []) byClass.push([v, s]);
+
+  return (dest, from) => {
+    for (const [v, s] of byClass) if (dest.includes(v)) return s;
+    const dn = norm(dest);
+    if (dn.length < 3) return null;
+
+    let best = null, bestScore = 0, bestGap = Infinity;
+    for (const s of scenes) {
+      let score = 0, gap = Infinity;
+      for (const k of keys.get(s)) {
+        const ratio = Math.min(k.length, dn.length) / Math.max(k.length, dn.length);
+        const sameJourney = from && s.group === from.group;
+        // Short destinations such as "Confirm", "Slip" or "Atm" are named relative to the
+        // journey they sit in — ViaCasa → Confirm means ViaCasaConfirm, not PlayCard's Confirm —
+        // so a prefix or suffix hit inside the source's journey outranks an exact hit elsewhere.
+        const v = sameJourney && dn.length >= 3 && (k.endsWith(dn) || k.startsWith(dn)) && k !== dn ? 90
+          : k === dn ? 100
+          : ratio >= 0.6 && (k.endsWith(dn) || dn.endsWith(k)) ? 60
+          : ratio >= 0.5 && (k.includes(dn) || dn.includes(k)) ? 40
+          : 0;
+        const g = Math.abs(k.length - dn.length);
+        if (v > score || (v === score && v > 0 && g < gap)) { score = v; gap = g; }
+      }
+      if (!score) continue;
+      if (from && s.group === from.group) score += 15;
+      if (score > bestScore || (score === bestScore && gap < bestGap)) { best = s; bestScore = score; bestGap = gap; }
+    }
+    return bestScore >= 40 ? best : null;
+  };
 }
 
 // ── Font loader ───────────────────────────────────────────────────────────────
