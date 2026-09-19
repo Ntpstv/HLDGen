@@ -39,7 +39,8 @@ const MAX_API_ROWS  = 6;
 const MAX_LIST_ROWS = 6;
 const HEADER_H      = 44;   // navigation title + view controller class, above the wireframe
 const MAX_COLS       = 6;    // unlinked screens per row, under the flow
-const LAYER_GAP      = 180;  // horizontal room between flow columns — fits a decision diamond
+const LAYER_GAP      = 320;  // room between flow columns for a decision diamond and action labels
+const BRANCH_STUB    = 14;   // short run out of a diamond before a branch turns toward its screen
 const STACK_GAP      = 60;   // vertical gap between screens in one flow column
 const SECTION_GAP    = 120;  // between the flow and the unlinked-screen grid below it
 const DECISION       = 44;
@@ -96,8 +97,12 @@ figma.ui.onmessage = async (msg) => {
 
           const k = `${s.name}->${t.name}`;
           // Six buttons leading to the same screen is one relationship, not six arrows.
-          if (edges.has(k)) edges.get(k).count++;
-          else edges.set(k, { from: s, to: t, count: 1 });
+          if (!edges.has(k)) edges.set(k, { from: s, to: t, count: 0, actions: [] });
+          const e = edges.get(k);
+          e.count++;
+          // Kept so each connector can say which action takes the user there.
+          const act = (chain.action || '').replace(/^'|'$/g, '');
+          if (act && !e.actions.includes(act)) e.actions.push(act);
         }
       }
     }
@@ -165,9 +170,11 @@ figma.ui.onmessage = async (msg) => {
 
         if (targets.length === 1) {
           const end = anchorIn(targets[0]);
-          const line = buildElbow(start, end, end.x - LAYER_GAP / 2, C.accent);
+          const bend = end.x - LAYER_GAP / 2;
+          const line = buildElbow(start, end, bend, C.accent);
           line.name = `${from.name} → ${targets[0].name}`;
           tag(line); figma.currentPage.appendChild(line); arrowCount++;
+          await labelConnector(edges.get(`${from.name}->${targets[0].name}`), bend, end);
           continue;
         }
 
@@ -181,10 +188,13 @@ figma.ui.onmessage = async (msg) => {
 
         for (const t of targets) {
           const end = anchorIn(t);
-          const out = buildElbow({ x: cx + DECISION / 2, y: cy }, end,
-                                 cx + DECISION / 2 + (end.x - cx - DECISION / 2) / 2, C.accent);
+          // Bend right after the diamond so the final run into the screen is long enough to
+          // carry the action name that picks this branch.
+          const bend = cx + DECISION / 2 + BRANCH_STUB;
+          const out = buildElbow({ x: cx + DECISION / 2, y: cy }, end, bend, C.accent);
           out.name = `${from.name} → ${t.name}`;
           tag(out); figma.currentPage.appendChild(out); arrowCount++;
+          await labelConnector(edges.get(`${from.name}->${t.name}`), bend, end);
         }
       }
 
@@ -498,6 +508,29 @@ function restack(layout) {
   for (const p of layout.pos.values()) w = Math.max(w, p.x + CARD_W);
   layout.w = w;
   layout.h = Math.max(bottom, CARD_H);
+}
+
+/// Writes the triggering action(s) just above a connector's last horizontal run, so a branch
+/// out of a decision reads as "this action → that screen" rather than an unexplained split.
+async function labelConnector(edge, fromX, end) {
+  if (!edge || !edge.actions || edge.actions.length === 0) return;
+  const room = end.x - fromX - 12;
+  const maxChars = Math.max(8, Math.floor(room / 5.4));
+  const first = edge.actions[0];
+  const more = edge.actions.length - 1;
+  let text = more > 0 ? `${first} +${more}` : first;
+  if (text.length > maxChars) text = truncate(first, maxChars - (more > 0 ? String(more).length + 2 : 0)) + (more > 0 ? ` +${more}` : '');
+
+  const t = figma.createText();
+  t.fontName = { family: 'Inter', style: 'Regular' };
+  t.fontSize = 9;
+  t.characters = text;
+  t.fills = solid(C.text);
+  t.x = fromX + 6;
+  t.y = end.y - 15;
+  t.name = `action: ${edge.actions.join(', ')}`;   // full list stays inspectable in Figma
+  tag(t);
+  figma.currentPage.appendChild(t);
 }
 
 /// Right-angled connector: out horizontally, down or up at `bendX`, in horizontally.
