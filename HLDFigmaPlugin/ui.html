@@ -95,10 +95,9 @@
 <div class="status" id="status"></div>
 
 <div class="tip">
-  Generate all scenes at once:<br>
-  <code>swift run --package-path Tools/HLDGen hldgen \</code><br>
-  <code>&nbsp;&nbsp;Scenes/Home Scenes/ProductHighlight … \</code><br>
-  <code>&nbsp;&nbsp;--module &lt;ModuleName&gt; -o bundle.json</code>
+  Make the bundle from your repo root:<br>
+  <code>bash &lt;HLDGen&gt;/hldgen.sh &lt;ModuleDir&gt; -o bundle.json</code><br>
+  It finds every screen, API, title and storage call itself.
 </div>
 
 <script>
