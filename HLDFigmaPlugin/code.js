@@ -762,7 +762,8 @@ async function buildApiPanel(endpoints) {
     const line = figma.createText();
     line.fontName = { family: 'Inter', style: 'Semi Bold' };
     line.fontSize = 9;
-    line.characters = truncate(`${e.method || 'GET'}  ${e.path || ''}`, 46);
+    const method = e.method || 'GET';
+    line.characters = `${method}  ${truncatePath(e.path || '', 46 - method.length - 2)}`;
     line.fills = solid(C.green, 0.95);
     line.x = 10; line.y = top;
     f.appendChild(line);
@@ -887,6 +888,21 @@ function hexToRgb(hex) {
   if (!hex || !hex.startsWith('#')) return null;
   const n = parseInt(hex.slice(1), 16);
   return { r: ((n >> 16) & 255) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255 };
+}
+
+/// Shortens a path from the front, whole segments at a time: the tail names what the endpoint
+/// does (`…/pocket/create`), while the shared prefix (`/paotang/v1/bff-…`) is the same on every row.
+function truncatePath(path, max) {
+  if (path.length <= max) return path;
+  const parts = path.split('/').filter(Boolean);
+  let tail = '';
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const next = '/' + parts[i] + tail;
+    if (('…' + next).length > max) break;
+    tail = next;
+  }
+  // A single final segment longer than the room: keep its end rather than showing nothing.
+  return tail ? '…' + tail : '…' + path.slice(path.length - (max - 1));
 }
 
 function truncate(str, max) {
