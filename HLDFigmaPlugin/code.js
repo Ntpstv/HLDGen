@@ -34,7 +34,7 @@ const PANEL_HEAD_H  = 24;
 const PANEL_PAD     = 10;
 const ROW_H         = 14;
 const API_ROW_H     = 42;   // endpoint line plus its request and response field lines
-const MAX_NAV_ROWS  = 8;
+const MAX_NAV_ROWS  = 10;
 const MAX_API_ROWS  = 6;
 const MAX_LIST_ROWS = 6;
 const HEADER_H      = 44;   // navigation title + view controller class, above the wireframe
@@ -81,7 +81,14 @@ figma.ui.onmessage = async (msg) => {
     // Screens are placed in flow order, so which screen leads to which has to be known first.
     const resolveDest = makeDestinationResolver(scenes);
     const edges = new Map();        // "srcName->dstName" → { from, to, count }
-    const externals = new Map();    // scene → Set(label)   destinations outside this journey
+    // Every destination a screen reaches, resolved where possible. Rendered as clickable rows,
+    // so a destination that is not drawn as a line is still one click away.
+    const goesTo = new Map();       // scene → [{ label, target }]
+    const addGoesTo = (s, label, target) => {
+      if (!goesTo.has(s)) goesTo.set(s, []);
+      const rows = goesTo.get(s);
+      if (!rows.some(r => r.label === label)) rows.push({ label, target });
+    };
     for (const s of scenes) {
       for (const chain of visibleActions(s)) {
         for (const dest of [...(chain.resolvedDestinations || []), ...(chain.vcRoutes || [])]) {
@@ -89,10 +96,10 @@ figma.ui.onmessage = async (msg) => {
           const short = dest.replace('ViewController', 'VC').replace(' screen', '').trim();
           const t = resolveDest(dest, s);
 
-          if (!externals.has(s)) externals.set(s, new Set());
-          if (!t)                   { externals.get(s).add(short); continue; }
+          if (!t)                   { addGoesTo(s, `↗ ${short}`, null); continue; }
           if (t === s)              continue;                       // self-route, nothing to draw
-          if (t.group !== s.group)  { externals.get(s).add(`${short} · ${t.group}`); continue; }
+          if (t.group !== s.group)  { addGoesTo(s, `↗ ${t.name} · ${t.group}`, t); continue; }
+          addGoesTo(s, `→ ${t.name}`, t);
 
           const k = `${s.name}->${t.name}`;
           // Six buttons leading to the same screen is one relationship, not six arrows.
@@ -107,7 +114,7 @@ figma.ui.onmessage = async (msg) => {
     }
 
     // Same-journey destinations, named per screen for its "goes to" panel.
-    const extOf = s => [...(externals.get(s) || [])];
+    const goesToOf = s => goesTo.get(s) || [];
 
     // ── Pass 2: lay out each journey as a left-to-right flow ────────────────
     // A grid put related screens anywhere and the arrows had to cross the block to reach
@@ -115,23 +122,9 @@ figma.ui.onmessage = async (msg) => {
     // it, so every line is a short hop between neighbouring columns.
     const layouts = [];
     for (const [name, gs] of journeys) {
-      const layout = layoutJourney(gs, edges, s => columnHeight(s, [], extOf(s)));
+      const layout = layoutJourney(gs, edges, s => columnHeight(s, goesToOf(s)));
       layouts.push({ name, ...layout });
     }
-    // Loop-backs are not drawn (they would run right-to-left across the flow), so they are
-    // named in the screen's panel instead.
-    const backOf = s => {
-      for (const l of layouts) if (l.back.has(s)) return l.back.get(s).map(t => `${t.name} (back)`);
-      return [];
-    };
-    for (const l of layouts) {
-      l.h = 0;
-      for (const [sc, p] of l.pos) {
-        p.h = columnHeight(sc, backOf(sc), extOf(sc));
-      }
-      restack(l);
-    }
-
     // Tallest first, so the big journeys anchor the columns and the small ones fill the gaps.
     layouts.sort((x, y) => y.h - x.h);
 
@@ -142,6 +135,7 @@ figma.ui.onmessage = async (msg) => {
     const journeyBounds = [];
     const sceneToGroup  = new Map();
     let arrowCount = 0, decisionCount = 0;
+    const linkRows = [];            // GOES TO rows to point at their screens once all exist
 
     for (const l of layouts) {
       let c = 0;
@@ -151,7 +145,7 @@ figma.ui.onmessage = async (msg) => {
 
       // ── screens
       for (const [scene, p] of l.pos) {
-        const container = await buildScreenGroup(scene, backOf(scene), extOf(scene));
+        const container = await buildScreenGroup(scene, goesToOf(scene), linkRows);
         container.x = ox + p.x;
         container.y = oy + p.y;
         tag(container);
@@ -176,7 +170,11 @@ figma.ui.onmessage = async (msg) => {
         return { x: ox + p.x, y: oy + p.y + HEADER_H + CARD_H / 2 + (i - (n - 1) / 2) * FANIN_SPACING };
       };
 
-      for (const [from, targets] of l.fwd) {
+      for (const [from, allTargets] of l.fwd) {
+        // Only hops into the very next column are drawn. A line skipping columns has to run
+        // through the screens in between; those destinations are reached from GOES TO instead.
+        const col = l.pos.get(from).col;
+        const targets = allTargets.filter(t => l.pos.get(t).col === col + 1);
         if (targets.length === 0) continue;
         const start = anchorOut(from);
 
@@ -214,6 +212,16 @@ figma.ui.onmessage = async (msg) => {
       journeyBounds.push({ name: l.name, x: ox, y: oy, w: l.w, h: l.h });
     }
 
+    // ── GOES TO rows become links to the screen they name ───────────────────
+    let linkCount = 0;
+    for (const { node, target } of linkRows) {
+      const dest = sceneToGroup.get(target);
+      if (!dest) continue;
+      node.hyperlink = { type: 'NODE', value: dest.id };
+      node.textDecoration = 'UNDERLINE';
+      linkCount++;
+    }
+
     // ── labelled boundary behind each journey ───────────────────────────────
     for (const bnd of journeyBounds) {
       // insertChild(0, …) is the bottom of the z-order, so push the label in first
@@ -225,7 +233,7 @@ figma.ui.onmessage = async (msg) => {
     }
 
     figma.viewport.scrollAndZoomIntoView([...sceneToGroup.values()]);
-    figma.ui.postMessage({ type: 'done', detail: `${scenes.length} screens · ${journeys.size} journeys · ${decisionCount} decisions · ${arrowCount} lines` });
+    figma.ui.postMessage({ type: 'done', detail: `${scenes.length} screens · ${journeys.size} journeys · ${decisionCount} decisions · ${arrowCount} lines · ${linkCount} links` });
   } catch (e) {
     figma.ui.postMessage({ type: 'error', detail: String(e) });
   }
@@ -589,10 +597,10 @@ async function buildDecision(cx, cy, branches) {
 
 // ── One screen as a single node: card + stickies + API cloud ─────────────────
 // Figma labels every top-level node, so leaving these loose put 537 names on the board.
-async function buildScreenGroup(scene, nextNames, externalNames) {
+async function buildScreenGroup(scene, goesToRows, linkRows) {
   const group = figma.createFrame();
   group.name = `${scene.group} · ${scene.name}`;
-  group.resize(CARD_W, columnHeight(scene, nextNames, externalNames));
+  group.resize(CARD_W, columnHeight(scene, goesToRows));
   group.fills = noFill();
   group.clipsContent = false;
 
@@ -609,7 +617,7 @@ async function buildScreenGroup(scene, nextNames, externalNames) {
     y += panel.height + PANEL_GAP;
   };
 
-  place(await buildNavPanel(nextNames, externalNames));
+  place(await buildNavPanel(goesToRows, linkRows));
   place(await buildApiPanel(scene.apiEndpoints || []));
   place(await buildListPanel('NOTIFICATION CENTER',
     (scene.notifications || []).map(n => ({ text: n, color: C.pink })), C.pink));
@@ -695,16 +703,15 @@ async function buildListPanel(label, items, accent) {
 // ── "Goes to" panel ──────────────────────────────────────────────────────────
 // An arrow already shows same-journey moves, but it does not name the ones that leave —
 // another journey, or another module entirely — so those are listed here in text.
-async function buildNavPanel(nextNames, externalNames) {
-  const rows = [
-    ...nextNames.map(n => ({ text: `→ ${n}`, color: C.accent })),
-    ...externalNames.map(n => ({ text: `↗ ${n}`, color: C.amber })),
-  ].slice(0, MAX_NAV_ROWS);
+async function buildNavPanel(goesToRows, linkRows) {
+  const all = goesToRows || [];
+  const rows = all.slice(0, MAX_NAV_ROWS);
   if (rows.length === 0) return null;
+  const extra = all.length - rows.length;
 
   const f = figma.createFrame();
   f.name = 'goes to';
-  f.resize(CARD_W, PANEL_HEAD_H + rows.length * ROW_H + PANEL_PAD);
+  f.resize(CARD_W, PANEL_HEAD_H + (rows.length + (extra > 0 ? 1 : 0)) * ROW_H + PANEL_PAD);
   f.fills = solid(C.surface2, 0.7);
   f.strokes = solid(C.border);
   f.strokeWeight = 1;
@@ -723,12 +730,22 @@ async function buildNavPanel(nextNames, externalNames) {
     const t = figma.createText();
     t.fontName = { family: 'Inter', style: 'Regular' };
     t.fontSize = 9;
-    t.characters = truncate(r.text, 44);
-    t.fills = solid(r.color, 0.95);
+    t.characters = truncate(r.label, 44);
+    // Blue: a screen on this board, linked. Amber: somewhere the board does not contain.
+    t.fills = solid(r.target ? C.accent : C.amber, 0.95);
     t.x = 10; t.y = PANEL_HEAD_H + i * ROW_H;
     f.appendChild(t);
+    if (r.target) linkRows.push({ node: t, target: r.target });
   });
-
+  if (extra > 0) {
+    const t = figma.createText();
+    t.fontName = { family: 'Inter', style: 'Regular' };
+    t.fontSize = 9;
+    t.characters = `+${extra} more`;
+    t.fills = solid(C.textDim);
+    t.x = 10; t.y = PANEL_HEAD_H + rows.length * ROW_H;
+    f.appendChild(t);
+  }
   return f;
 }
 
@@ -807,13 +824,14 @@ function visibleActions(scene) {
 /// Full vertical extent of one screen's column — card, its stack of stickies, and any API cloud.
 /// Rows inside a journey are spaced by the tallest column, so a 76-sticky screen cannot overlap
 /// the row beneath it.
-function columnHeight(scene, nextNames, externalNames) {
+function columnHeight(scene, goesToRows) {
   const listH = n => {
     if (n === 0) return 0;
     const rows = Math.min(n, MAX_LIST_ROWS) + (n > MAX_LIST_ROWS ? 1 : 0);
     return PANEL_GAP + PANEL_HEAD_H + rows * ROW_H + PANEL_PAD;
   };
-  const navRows = Math.min((nextNames || []).length + (externalNames || []).length, MAX_NAV_ROWS);
+  const nav = (goesToRows || []).length;
+  const navRows = Math.min(nav, MAX_NAV_ROWS) + (nav > MAX_NAV_ROWS ? 1 : 0);
   const apiRows = Math.min((scene.apiEndpoints || []).length, MAX_API_ROWS);
   let h = HEADER_H + CARD_H;
   if (navRows > 0) h += PANEL_GAP + PANEL_HEAD_H + navRows * ROW_H + PANEL_PAD;
