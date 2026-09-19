@@ -40,7 +40,8 @@ const MAX_LIST_ROWS = 6;
 const HEADER_H      = 44;   // navigation title + view controller class, above the wireframe
 const MAX_COLS       = 6;    // unlinked screens per row, under the flow
 const LAYER_GAP      = 320;  // room between flow columns for a decision diamond and action labels
-const BRANCH_STUB    = 14;   // short run out of a diamond before a branch turns toward its screen
+const BRANCH_STUB    = 14;
+const FANIN_SPACING  = 34;   // vertical gap between connectors entering the same screen   // short run out of a diamond before a branch turns toward its screen
 const STACK_GAP      = 60;   // vertical gap between screens in one flow column
 const SECTION_GAP    = 120;  // between the flow and the unlinked-screen grid below it
 const DECISION       = 44;
@@ -162,14 +163,27 @@ figma.ui.onmessage = async (msg) => {
 
       // ── connectors: straight hop for one next screen, a decision diamond for several
       const anchorOut = sc => { const p = l.pos.get(sc); return { x: ox + p.x + CARD_W, y: oy + p.y + HEADER_H + CARD_H / 2 }; };
-      const anchorIn  = sc => { const p = l.pos.get(sc); return { x: ox + p.x,          y: oy + p.y + HEADER_H + CARD_H / 2 }; };
+      // Several connectors into one screen would share a single entry point and run along the
+      // same horizontal line, stacking their lines and labels on top of each other. Each
+      // incoming connector gets its own slot down the screen's left edge instead.
+      const inbound = new Map();
+      for (const [f, ts] of l.fwd) for (const t of ts) {
+        if (!inbound.has(t)) inbound.set(t, []);
+        inbound.get(t).push(f);
+      }
+      const anchorIn = (sc, from) => {
+        const p = l.pos.get(sc);
+        const srcs = inbound.get(sc) || [from];
+        const i = Math.max(0, srcs.indexOf(from)), n = srcs.length;
+        return { x: ox + p.x, y: oy + p.y + HEADER_H + CARD_H / 2 + (i - (n - 1) / 2) * FANIN_SPACING };
+      };
 
       for (const [from, targets] of l.fwd) {
         if (targets.length === 0) continue;
         const start = anchorOut(from);
 
         if (targets.length === 1) {
-          const end = anchorIn(targets[0]);
+          const end = anchorIn(targets[0], from);
           const bend = end.x - LAYER_GAP / 2;
           const line = buildElbow(start, end, bend, C.accent);
           line.name = `${from.name} → ${targets[0].name}`;
@@ -187,7 +201,7 @@ figma.ui.onmessage = async (msg) => {
         tag(into); figma.currentPage.appendChild(into); arrowCount++;
 
         for (const t of targets) {
-          const end = anchorIn(t);
+          const end = anchorIn(t, from);
           // Bend right after the diamond so the final run into the screen is long enough to
           // carry the action name that picks this branch.
           const bend = cx + DECISION / 2 + BRANCH_STUB;
